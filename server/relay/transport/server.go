@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -56,6 +57,72 @@ func writeEvent(conn net.Conn, kind string, fields map[string]any) error {
 		return err
 	}
 	return protocol.WriteFrame(conn, payload)
+}
+
+func stateName(state connState) string {
+	switch state {
+	case stateConnected:
+		return "connected"
+	case stateHandshaken:
+		return "handshaken"
+	case stateRoomJoined:
+		return "roomJoined"
+	case stateDisconnected:
+		return "disconnected"
+	default:
+		return "unknown"
+	}
+}
+
+func redactValue(value any) any {
+	switch v := value.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(v))
+		for key, child := range v {
+			if shouldRedactField(key) {
+				out[key] = "[REDACTED]"
+				continue
+			}
+			out[key] = redactValue(child)
+		}
+		return out
+	case []any:
+		out := make([]any, 0, len(v))
+		for _, child := range v {
+			out = append(out, redactValue(child))
+		}
+		return out
+	default:
+		return value
+	}
+}
+
+func extractClientSequence(payload map[string]any) int64 {
+	if payload == nil {
+		return 0
+	}
+	if v, ok := payload["clientSequence"].(float64); ok {
+		return int64(v)
+	}
+	return 0
+}
+
+func shouldRedactField(field string) bool {
+	lower := strings.ToLower(field)
+	return strings.Contains(lower, "auth") || strings.Contains(lower, "token") || strings.Contains(lower, "secret")
+}
+
+func (s *Server) logStructured(fields map[string]any) {
+	if fields == nil {
+		fields = map[string]any{}
+	}
+	safe := redactValue(fields)
+	b, err := json.Marshal(safe)
+	if err != nil {
+		s.log.Printf("logMarshalError err=%v", err)
+		return
+	}
+	s.log.Print(string(b))
 }
 
 func (s *Server) writeProtocolViolationAndDisconnect(conn net.Conn, v *protocol.ProtocolViolation) {
@@ -122,12 +189,71 @@ func (s *Server) handleConn(conn net.Conn) {
 	roomID := ""
 	playerID := 0
 	state := stateConnected
+	logBase := map[string]any{"sessionId": session.ID, "remoteAddr": conn.RemoteAddr().String()}
+	setState := func(next connState, trigger string) {
+		if state == next {
+			return
+		}
+		s.logStructured(map[string]any{
+			"event":       "stateTransition",
+			"fromState":   stateName(state),
+			"toState":     stateName(next),
+			"trigger":     trigger,
+			"roomId":      roomID,
+			"playerId":    playerID,
+			"sessionId":   logBase["sessionId"],
+			"remoteAddr":  logBase["remoteAddr"],
+			"state":       stateName(next),
+			"messageKind": trigger,
+		})
+		state = next
+	}
+	logMessage := func(direction string, kind string, clientSeq int64, serverSeq int64, extra map[string]any) {
+		entry := map[string]any{
+			"event":          "message",
+			"direction":      direction,
+			"messageKind":    kind,
+			"roomId":         roomID,
+			"playerId":       playerID,
+			"clientSequence": clientSeq,
+			"serverSequence": serverSeq,
+			"sessionId":      logBase["sessionId"],
+			"remoteAddr":     logBase["remoteAddr"],
+			"state":          stateName(state),
+		}
+		for k, v := range extra {
+			entry[k] = v
+		}
+		s.logStructured(entry)
+	}
+	logProtocolViolation := func(v *protocol.ProtocolViolation) {
+		if v == nil {
+			return
+		}
+		s.logStructured(map[string]any{
+			"event":                 "protocolViolation",
+			"code":                  v.Code,
+			"category":              v.Reason,
+			"message":               v.Message,
+			"roomId":                roomID,
+			"playerId":              playerID,
+			"sessionId":             logBase["sessionId"],
+			"remoteAddr":            logBase["remoteAddr"],
+			"state":                 stateName(state),
+			"protocolViolation":     true,
+			"protocolViolationCode": v.Code,
+		})
+	}
+	sendEvent := func(kind string, fields map[string]any, clientSeq int64, serverSeq int64) error {
+		logMessage("outbound", kind, clientSeq, serverSeq, fields)
+		return writeEvent(conn, kind, fields)
+	}
 	defer close(session.Send)
 	defer func() {
 		if roomID != "" {
 			s.leaveRoomAndNotifyPeers(roomID, session.ID, playerID, "clientRequested")
 		}
-		state = stateDisconnected
+		setState(stateDisconnected, "connectionClosed")
 	}()
 
 	heartbeatTicker := time.NewTicker(s.cfg.HeartbeatInterval)
@@ -147,7 +273,9 @@ func (s *Server) handleConn(conn net.Conn) {
 		if err != nil {
 			if ne, ok := err.(net.Error); ok && ne.Timeout() {
 				timeoutCode := timeoutCodeForDuration(s.cfg.HeartbeatTimeout)
-				s.writeProtocolViolationAndDisconnect(conn, &protocol.ProtocolViolation{Code: timeoutCode, Message: "heartbeat timeout", Reason: "networkTimeout"})
+				v := &protocol.ProtocolViolation{Code: timeoutCode, Message: "heartbeat timeout", Reason: "networkTimeout"}
+				logProtocolViolation(v)
+				s.writeProtocolViolationAndDisconnect(conn, v)
 				if roomID != "" {
 					s.leaveRoomAndNotifyPeers(roomID, session.ID, playerID, "networkTimeout")
 					roomID = ""
@@ -156,13 +284,20 @@ func (s *Server) handleConn(conn net.Conn) {
 				return
 			}
 			if v, ok := err.(*protocol.ProtocolViolation); ok {
+				logProtocolViolation(v)
 				s.writeProtocolViolationAndDisconnect(conn, v)
 			}
 			return
 		}
 
+		var inbound map[string]any
+		if err := json.Unmarshal(payload, &inbound); err == nil {
+			logMessage("inbound", fmt.Sprintf("%v", inbound["intent"]), extractClientSequence(inbound), 0, map[string]any{"payload": inbound})
+		}
+
 		intent, violation := protocol.ParseAndValidateClientIntent(payload)
 		if violation != nil {
+			logProtocolViolation(violation)
 			s.writeProtocolViolationAndDisconnect(conn, violation)
 			return
 		}
@@ -170,46 +305,62 @@ func (s *Server) handleConn(conn net.Conn) {
 		switch intent.Intent {
 		case "hello":
 			if state != stateConnected {
-				s.writeProtocolViolationAndDisconnect(conn, &protocol.ProtocolViolation{Code: 409, Message: "hello already completed", Reason: "protocolError"})
+				v := &protocol.ProtocolViolation{Code: 409, Message: "hello already completed", Reason: "protocolError"}
+				logProtocolViolation(v)
+				s.writeProtocolViolationAndDisconnect(conn, v)
 				return
 			}
 			if s.cfg.Secret != "" && intent.AuthToken != s.cfg.Secret {
-				s.writeProtocolViolationAndDisconnect(conn, &protocol.ProtocolViolation{Code: 401, Message: "access denied", Reason: "protocolError"})
+				v := &protocol.ProtocolViolation{Code: 401, Message: "access denied", Reason: "protocolError"}
+				logProtocolViolation(v)
+				s.writeProtocolViolationAndDisconnect(conn, v)
 				return
 			}
-			state = stateHandshaken
-			_ = writeEvent(conn, "playerAssigned", map[string]any{"playerId": playerID, "displayName": session.ID, "roomId": roomID})
+			setState(stateHandshaken, "hello")
+			_ = sendEvent("playerAssigned", map[string]any{"playerId": playerID, "displayName": session.ID, "roomId": roomID}, intent.ClientSequence, 0)
 		case "createRoom":
 			if state == stateConnected {
-				s.writeProtocolViolationAndDisconnect(conn, &protocol.ProtocolViolation{Code: 400, Message: "hello required before createRoom", Reason: "protocolError"})
+				v := &protocol.ProtocolViolation{Code: 400, Message: "hello required before createRoom", Reason: "protocolError"}
+				logProtocolViolation(v)
+				s.writeProtocolViolationAndDisconnect(conn, v)
 				return
 			}
 			if roomID != "" {
-				s.writeProtocolViolationAndDisconnect(conn, &protocol.ProtocolViolation{Code: 409, Message: "already joined room", Reason: "protocolError"})
+				v := &protocol.ProtocolViolation{Code: 409, Message: "already joined room", Reason: "protocolError"}
+				logProtocolViolation(v)
+				s.writeProtocolViolationAndDisconnect(conn, v)
 				return
 			}
 			if err := s.rooms.Create(intent.RoomName, intent.MaxPlayers); err != nil {
-				s.writeProtocolViolationAndDisconnect(conn, &protocol.ProtocolViolation{Code: 403, Message: fmt.Sprintf("room create denied: %s", err.Error()), Reason: "protocolError"})
+				v := &protocol.ProtocolViolation{Code: 403, Message: fmt.Sprintf("room create denied: %s", err.Error()), Reason: "protocolError"}
+				logProtocolViolation(v)
+				s.writeProtocolViolationAndDisconnect(conn, v)
 				return
 			}
 			session.Player = session.ID
 			assignedPlayerID, memberCount, err := s.rooms.Join(intent.RoomName, session)
 			if err != nil {
-				s.writeProtocolViolationAndDisconnect(conn, &protocol.ProtocolViolation{Code: 500, Message: fmt.Sprintf("room join after create failed: %s", err.Error()), Reason: "protocolError"})
+				v := &protocol.ProtocolViolation{Code: 500, Message: fmt.Sprintf("room join after create failed: %s", err.Error()), Reason: "protocolError"}
+				logProtocolViolation(v)
+				s.writeProtocolViolationAndDisconnect(conn, v)
 				return
 			}
 			roomID = intent.RoomName
 			playerID = assignedPlayerID
-			state = stateRoomJoined
-			_ = writeEvent(conn, "playerAssigned", map[string]any{"playerId": playerID, "displayName": session.ID, "roomId": roomID})
-			_ = writeEvent(conn, "roomJoined", map[string]any{"roomId": roomID, "roomName": intent.RoomName, "maxPlayers": intent.MaxPlayers, "memberCount": memberCount})
+			setState(stateRoomJoined, "createRoom")
+			_ = sendEvent("playerAssigned", map[string]any{"playerId": playerID, "displayName": session.ID, "roomId": roomID}, intent.ClientSequence, 0)
+			_ = sendEvent("roomJoined", map[string]any{"roomId": roomID, "roomName": intent.RoomName, "maxPlayers": intent.MaxPlayers, "memberCount": memberCount}, intent.ClientSequence, 0)
 		case "joinRoom":
 			if state == stateConnected {
-				s.writeProtocolViolationAndDisconnect(conn, &protocol.ProtocolViolation{Code: 400, Message: "hello required before joinRoom", Reason: "protocolError"})
+				v := &protocol.ProtocolViolation{Code: 400, Message: "hello required before joinRoom", Reason: "protocolError"}
+				logProtocolViolation(v)
+				s.writeProtocolViolationAndDisconnect(conn, v)
 				return
 			}
 			if roomID != "" {
-				s.writeProtocolViolationAndDisconnect(conn, &protocol.ProtocolViolation{Code: 409, Message: "already joined room", Reason: "protocolError"})
+				v := &protocol.ProtocolViolation{Code: 409, Message: "already joined room", Reason: "protocolError"}
+				logProtocolViolation(v)
+				s.writeProtocolViolationAndDisconnect(conn, v)
 				return
 			}
 			session.Player = session.ID
@@ -219,47 +370,59 @@ func (s *Server) handleConn(conn net.Conn) {
 				if errors.Is(err, rooms.ErrRoomNotFound) {
 					code = 404
 				}
-				s.writeProtocolViolationAndDisconnect(conn, &protocol.ProtocolViolation{Code: code, Message: fmt.Sprintf("room join denied: %s", err.Error()), Reason: "protocolError"})
+				v := &protocol.ProtocolViolation{Code: code, Message: fmt.Sprintf("room join denied: %s", err.Error()), Reason: "protocolError"}
+				logProtocolViolation(v)
+				s.writeProtocolViolationAndDisconnect(conn, v)
 				return
 			}
 			roomID = intent.RoomID
 			playerID = assignedPlayerID
-			state = stateRoomJoined
-			_ = writeEvent(conn, "playerAssigned", map[string]any{"playerId": playerID, "displayName": session.ID, "roomId": roomID})
-			_ = writeEvent(conn, "roomJoined", map[string]any{"roomId": roomID, "roomName": roomID, "maxPlayers": s.cfg.MaxPlayersPerRoom, "memberCount": memberCount})
+			setState(stateRoomJoined, "joinRoom")
+			_ = sendEvent("playerAssigned", map[string]any{"playerId": playerID, "displayName": session.ID, "roomId": roomID}, intent.ClientSequence, 0)
+			_ = sendEvent("roomJoined", map[string]any{"roomId": roomID, "roomName": roomID, "maxPlayers": s.cfg.MaxPlayersPerRoom, "memberCount": memberCount}, intent.ClientSequence, 0)
 		case "leaveRoom":
 			if state == stateConnected {
-				s.writeProtocolViolationAndDisconnect(conn, &protocol.ProtocolViolation{Code: 400, Message: "hello required before leaveRoom", Reason: "protocolError"})
+				v := &protocol.ProtocolViolation{Code: 400, Message: "hello required before leaveRoom", Reason: "protocolError"}
+				logProtocolViolation(v)
+				s.writeProtocolViolationAndDisconnect(conn, v)
 				return
 			}
 			if roomID != "" {
 				s.leaveRoomAndNotifyPeers(roomID, session.ID, playerID, "clientRequested")
 				roomID = ""
 				playerID = 0
-				state = stateHandshaken
+				setState(stateHandshaken, "leaveRoom")
 			}
-			_ = writeEvent(conn, "disconnected", map[string]any{"reason": "clientRequested", "message": "left room"})
-			state = stateDisconnected
+			_ = sendEvent("disconnected", map[string]any{"reason": "clientRequested", "message": "left room"}, intent.ClientSequence, 0)
+			setState(stateDisconnected, "leaveRoom")
 			return
 		case "heartbeat":
 			if state == stateConnected {
-				s.writeProtocolViolationAndDisconnect(conn, &protocol.ProtocolViolation{Code: 400, Message: "hello required before heartbeat", Reason: "protocolError"})
+				v := &protocol.ProtocolViolation{Code: 400, Message: "hello required before heartbeat", Reason: "protocolError"}
+				logProtocolViolation(v)
+				s.writeProtocolViolationAndDisconnect(conn, v)
 				return
 			}
 			lastHeartbeat = time.Now()
-			_ = writeEvent(conn, "heartbeatAck", map[string]any{"heartbeatCounter": intent.Heartbeat, "roomId": roomID})
+			_ = sendEvent("heartbeatAck", map[string]any{"heartbeatCounter": intent.Heartbeat, "roomId": roomID}, intent.ClientSequence, 0)
 		case "publishLinkEvent":
 			if state == stateConnected {
-				s.writeProtocolViolationAndDisconnect(conn, &protocol.ProtocolViolation{Code: 400, Message: "hello required before publishLinkEvent", Reason: "protocolError"})
+				v := &protocol.ProtocolViolation{Code: 400, Message: "hello required before publishLinkEvent", Reason: "protocolError"}
+				logProtocolViolation(v)
+				s.writeProtocolViolationAndDisconnect(conn, v)
 				return
 			}
 			if roomID == "" {
-				s.writeProtocolViolationAndDisconnect(conn, &protocol.ProtocolViolation{Code: 403, Message: "must join room first", Reason: "protocolError"})
+				v := &protocol.ProtocolViolation{Code: 403, Message: "must join room first", Reason: "protocolError"}
+				logProtocolViolation(v)
+				s.writeProtocolViolationAndDisconnect(conn, v)
 				return
 			}
 			var event protocol.LinkEvent
 			if err := json.Unmarshal(intent.Event, &event); err != nil {
-				s.writeProtocolViolationAndDisconnect(conn, &protocol.ProtocolViolation{Code: 400, Message: "invalid event payload", Reason: "protocolError"})
+				v := &protocol.ProtocolViolation{Code: 400, Message: "invalid event payload", Reason: "protocolError"}
+				logProtocolViolation(v)
+				s.writeProtocolViolationAndDisconnect(conn, v)
 				return
 			}
 
@@ -269,14 +432,19 @@ func (s *Server) handleConn(conn net.Conn) {
 				if errors.Is(err, rooms.ErrEventSequenceViolation) {
 					code = 409
 				}
-				s.writeProtocolViolationAndDisconnect(conn, &protocol.ProtocolViolation{Code: code, Message: err.Error(), Reason: "protocolError"})
+				v := &protocol.ProtocolViolation{Code: code, Message: err.Error(), Reason: "protocolError"}
+				logProtocolViolation(v)
+				s.writeProtocolViolationAndDisconnect(conn, v)
 				return
 			}
 			event.SenderPlayerID = senderPlayerID
+			logMessage("outbound", "inboundLinkEvent", intent.ClientSequence, serverSequence, map[string]any{"roomId": roomID, "playerId": senderPlayerID})
 			out, _ := protocol.MarshalEvent("inboundLinkEvent", map[string]any{"roomId": roomID, "serverSequence": serverSequence, "event": event})
 			rooms.BroadcastOrdered(participants, out)
 		default:
-			s.writeProtocolViolationAndDisconnect(conn, &protocol.ProtocolViolation{Code: 400, Message: "unknown intent", Reason: "protocolError"})
+			v := &protocol.ProtocolViolation{Code: 400, Message: "unknown intent", Reason: "protocolError"}
+			logProtocolViolation(v)
+			s.writeProtocolViolationAndDisconnect(conn, v)
 			return
 		}
 
@@ -284,7 +452,9 @@ func (s *Server) handleConn(conn net.Conn) {
 		case <-heartbeatTicker.C:
 			if time.Since(lastHeartbeat) > s.cfg.HeartbeatTimeout {
 				timeoutCode := timeoutCodeForDuration(s.cfg.HeartbeatTimeout)
-				s.writeProtocolViolationAndDisconnect(conn, &protocol.ProtocolViolation{Code: timeoutCode, Message: "heartbeat timeout", Reason: "networkTimeout"})
+				v := &protocol.ProtocolViolation{Code: timeoutCode, Message: "heartbeat timeout", Reason: "networkTimeout"}
+				logProtocolViolation(v)
+				s.writeProtocolViolationAndDisconnect(conn, v)
 				if roomID != "" {
 					s.leaveRoomAndNotifyPeers(roomID, session.ID, playerID, "networkTimeout")
 					roomID = ""
