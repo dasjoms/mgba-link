@@ -247,23 +247,23 @@ static CodecError _validateOutbound(const QVariantMap& payload) {
 		}
 	}
 
-	if (intent == QStringLiteral(CLIENT_INTENT_CREATE_ROOM)) {
+	if (intent == QString::fromLatin1(CLIENT_INTENT_CREATE_ROOM)) {
 		QString roomName;
 		qint64 maxPlayers = 0;
 		if (!_requireString(payload, QStringLiteral("roomName"), &roomName, &error) || !_requireInt(payload, QStringLiteral("maxPlayers"), 1, 255, &maxPlayers, &error)) {
 			return error;
 		}
-	} else if (intent == QStringLiteral(CLIENT_INTENT_JOIN_ROOM) || intent == QStringLiteral(CLIENT_INTENT_LEAVE_ROOM)) {
+	} else if (intent == QString::fromLatin1(CLIENT_INTENT_JOIN_ROOM) || intent == QString::fromLatin1(CLIENT_INTENT_LEAVE_ROOM)) {
 		QString roomId;
 		if (!_requireString(payload, QStringLiteral("roomId"), &roomId, &error)) {
 			return error;
 		}
-	} else if (intent == QStringLiteral(CLIENT_INTENT_HEARTBEAT)) {
+	} else if (intent == QString::fromLatin1(CLIENT_INTENT_HEARTBEAT)) {
 		qint64 counter = -1;
 		if (!_requireInt(payload, QStringLiteral("heartbeatCounter"), 0, std::numeric_limits<qint64>::max(), &counter, &error)) {
 			return error;
 		}
-	} else if (intent == QStringLiteral(CLIENT_INTENT_PUBLISH_LINK_EVENT)) {
+	} else if (intent == QString::fromLatin1(CLIENT_INTENT_PUBLISH_LINK_EVENT)) {
 		QString eventId;
 		QString sourcePeerId;
 		qint64 sequence = -1;
@@ -280,7 +280,7 @@ static CodecError _validateOutbound(const QVariantMap& payload) {
 		if (!_requireMap(payload, QStringLiteral("metadata"), &metadata, &error, false)) {
 			return error;
 		}
-	} else if (intent != QStringLiteral(CLIENT_INTENT_HELLO)) {
+	} else if (intent != QString::fromLatin1(CLIENT_INTENT_HELLO)) {
 		return _error(115, QStringLiteral("Unknown client intent kind"), {{QStringLiteral("intent"), intent}}, NetplayErrorCategory::ProtocolMismatch);
 	}
 
@@ -402,7 +402,7 @@ QByteArray encodeFrame(const QVariantMap& payload, CodecError* error) {
 	}
 
 	QVariantMap frame = payload;
-	if (frame.value(QStringLiteral("intent")).toString() == QStringLiteral(CLIENT_INTENT_PUBLISH_LINK_EVENT)) {
+	if (frame.value(QStringLiteral("intent")).toString() == QString::fromLatin1(CLIENT_INTENT_PUBLISH_LINK_EVENT)) {
 		CodecError binaryError;
 		if (!_encodeBinaryField(&frame, QStringLiteral("payload"), &binaryError)) {
 			const qint64 sequence = frame.value(QStringLiteral("clientSequence")).toLongLong();
@@ -452,25 +452,25 @@ DecodedMessage decodeFrame(const QByteArray& payload) {
 		return decoded;
 	}
 
-	if (decoded.kind == QStringLiteral(SERVER_EVENT_LINK_EVENT_ALIAS)) {
-		decoded.kind = QStringLiteral(SERVER_EVENT_INBOUND_LINK_EVENT);
+	if (decoded.kind == QString::fromLatin1(SERVER_EVENT_LINK_EVENT_ALIAS)) {
+		decoded.kind = QString::fromLatin1(SERVER_EVENT_INBOUND_LINK_EVENT);
 	}
 
-	if (decoded.kind == QStringLiteral(SERVER_EVENT_ROOM_JOINED)) {
+	if (decoded.kind == QString::fromLatin1(SERVER_EVENT_ROOM_JOINED)) {
 		error = _validateRoomJoined(message);
-	} else if (decoded.kind == QStringLiteral(SERVER_EVENT_PLAYER_ASSIGNED)) {
+	} else if (decoded.kind == QString::fromLatin1(SERVER_EVENT_PLAYER_ASSIGNED)) {
 		error = _validatePlayerAssigned(message);
-	} else if (decoded.kind == QStringLiteral(SERVER_EVENT_PEER_JOINED)) {
+	} else if (decoded.kind == QString::fromLatin1(SERVER_EVENT_PEER_JOINED)) {
 		error = _validatePeerJoined(message);
-	} else if (decoded.kind == QStringLiteral(SERVER_EVENT_PEER_LEFT)) {
+	} else if (decoded.kind == QString::fromLatin1(SERVER_EVENT_PEER_LEFT)) {
 		error = _validatePeerLeft(message);
-	} else if (decoded.kind == QStringLiteral(SERVER_EVENT_INBOUND_LINK_EVENT)) {
+	} else if (decoded.kind == QString::fromLatin1(SERVER_EVENT_INBOUND_LINK_EVENT)) {
 		error = _validateInboundLinkEvent(&message);
-	} else if (decoded.kind == QStringLiteral(SERVER_EVENT_HEARTBEAT_ACK)) {
+	} else if (decoded.kind == QString::fromLatin1(SERVER_EVENT_HEARTBEAT_ACK)) {
 		error = _validateHeartbeatAck(message);
-	} else if (decoded.kind == QStringLiteral(SERVER_EVENT_ERROR)) {
+	} else if (decoded.kind == QString::fromLatin1(SERVER_EVENT_ERROR)) {
 		error = _validateError(message);
-	} else if (decoded.kind == QStringLiteral(SERVER_EVENT_DISCONNECTED)) {
+	} else if (decoded.kind == QString::fromLatin1(SERVER_EVENT_DISCONNECTED)) {
 		error = _validateDisconnected(message);
 	} else {
 		error = _error(201, QStringLiteral("Unknown server event kind"), {{QStringLiteral("kind"), decoded.kind}}, NetplayErrorCategory::ProtocolMismatch);

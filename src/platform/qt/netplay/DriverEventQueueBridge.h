@@ -46,6 +46,7 @@ private:
 
 	mutable std::mutex m_mutex;
 	std::deque<Item> m_items;
+	std::vector<uint8_t> m_lastPoppedPayload;
 	GBASIONetEventQueue m_inboundQueue = {};
 };
 

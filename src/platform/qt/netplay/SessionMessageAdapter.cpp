@@ -50,7 +50,7 @@ ClientPublishLinkEventIntent SessionMessageAdapter::broadcastLinkEvent(qint64 ti
 void SessionMessageAdapter::handleServerEvent(const ServerRoomJoinedEvent& event) {
 	if (event.roomId.isEmpty()) {
 		_reportProtocolError(106, QStringLiteral("roomJoined missing room ID"), NetplayErrorCategory::ProtocolMismatch, -1, -1, {
-			{QStringLiteral("eventKind"), QStringLiteral(SERVER_EVENT_ROOM_JOINED)},
+			{QStringLiteral("eventKind"), QString::fromLatin1(SERVER_EVENT_ROOM_JOINED)},
 		});
 		return;
 	}
@@ -64,7 +64,7 @@ void SessionMessageAdapter::handleServerEvent(const ServerRoomJoinedEvent& event
 
 void SessionMessageAdapter::handleServerEvent(const ServerPlayerAssignedEvent& event) {
 	if (!_validateRoomScope(event.roomId, 107, QStringLiteral("playerAssigned room mismatch"), {
-		{QStringLiteral("eventKind"), QStringLiteral(SERVER_EVENT_PLAYER_ASSIGNED)},
+		{QStringLiteral("eventKind"), QString::fromLatin1(SERVER_EVENT_PLAYER_ASSIGNED)},
 		{QStringLiteral("eventRoomId"), event.roomId},
 	})) {
 		return;
@@ -72,7 +72,7 @@ void SessionMessageAdapter::handleServerEvent(const ServerPlayerAssignedEvent& e
 
 	if (event.playerId < 0) {
 		_reportProtocolError(101, QStringLiteral("Invalid local player assignment"), NetplayErrorCategory::ProtocolMismatch, -1, -1, {
-			{QStringLiteral("eventKind"), QStringLiteral(SERVER_EVENT_PLAYER_ASSIGNED)},
+			{QStringLiteral("eventKind"), QString::fromLatin1(SERVER_EVENT_PLAYER_ASSIGNED)},
 			{QStringLiteral("playerId"), event.playerId},
 		});
 		return;
@@ -86,7 +86,7 @@ void SessionMessageAdapter::handleServerEvent(const ServerPlayerAssignedEvent& e
 
 void SessionMessageAdapter::handleServerEvent(const ServerPeerJoinedEvent& event) {
 	if (!_validateRoomScope(event.roomId, 108, QStringLiteral("peerJoined room mismatch"), {
-		{QStringLiteral("eventKind"), QStringLiteral(SERVER_EVENT_PEER_JOINED)},
+		{QStringLiteral("eventKind"), QString::fromLatin1(SERVER_EVENT_PEER_JOINED)},
 		{QStringLiteral("eventRoomId"), event.roomId},
 	})) {
 		return;
@@ -94,7 +94,7 @@ void SessionMessageAdapter::handleServerEvent(const ServerPeerJoinedEvent& event
 
 	if (event.playerId < 0) {
 		_reportProtocolError(102, QStringLiteral("Invalid peer join player ID"), NetplayErrorCategory::ProtocolMismatch, -1, -1, {
-			{QStringLiteral("eventKind"), QStringLiteral(SERVER_EVENT_PEER_JOINED)},
+			{QStringLiteral("eventKind"), QString::fromLatin1(SERVER_EVENT_PEER_JOINED)},
 			{QStringLiteral("playerId"), event.playerId},
 		});
 		return;
@@ -107,7 +107,7 @@ void SessionMessageAdapter::handleServerEvent(const ServerPeerJoinedEvent& event
 
 void SessionMessageAdapter::handleServerEvent(const ServerPeerLeftEvent& event) {
 	if (!_validateRoomScope(event.roomId, 109, QStringLiteral("peerLeft room mismatch"), {
-		{QStringLiteral("eventKind"), QStringLiteral(SERVER_EVENT_PEER_LEFT)},
+		{QStringLiteral("eventKind"), QString::fromLatin1(SERVER_EVENT_PEER_LEFT)},
 		{QStringLiteral("eventRoomId"), event.roomId},
 	})) {
 		return;
@@ -115,7 +115,7 @@ void SessionMessageAdapter::handleServerEvent(const ServerPeerLeftEvent& event) 
 
 	if (event.playerId < 0) {
 		_reportProtocolError(110, QStringLiteral("Invalid peer left player ID"), NetplayErrorCategory::ProtocolMismatch, -1, -1, {
-			{QStringLiteral("eventKind"), QStringLiteral(SERVER_EVENT_PEER_LEFT)},
+			{QStringLiteral("eventKind"), QString::fromLatin1(SERVER_EVENT_PEER_LEFT)},
 			{QStringLiteral("playerId"), event.playerId},
 		});
 		return;
@@ -123,7 +123,7 @@ void SessionMessageAdapter::handleServerEvent(const ServerPeerLeftEvent& event) 
 
 	if (!m_knownPlayers.contains(event.playerId)) {
 		_reportProtocolError(103, QStringLiteral("Unknown player left room"), NetplayErrorCategory::ProtocolMismatch, -1, -1, {
-			{QStringLiteral("eventKind"), QStringLiteral(SERVER_EVENT_PEER_LEFT)},
+			{QStringLiteral("eventKind"), QString::fromLatin1(SERVER_EVENT_PEER_LEFT)},
 			{QStringLiteral("playerId"), event.playerId},
 		});
 		return;
@@ -139,9 +139,9 @@ void SessionMessageAdapter::handleServerEvent(const ServerPeerLeftEvent& event) 
 }
 
 void SessionMessageAdapter::handleServerEvent(const ServerInboundLinkEvent& event) {
-	if (!m_roomId.isEmpty() && event.event.roomId != m_roomId) {
+	if (!m_roomId.isEmpty() && !event.event.roomId.isEmpty() && event.event.roomId != m_roomId) {
 		_reportProtocolError(111, QStringLiteral("inboundLinkEvent room mismatch"), NetplayErrorCategory::ProtocolMismatch, event.event.sequence, -1, {
-			{QStringLiteral("eventKind"), QStringLiteral(SERVER_EVENT_INBOUND_LINK_EVENT)},
+			{QStringLiteral("eventKind"), QString::fromLatin1(SERVER_EVENT_INBOUND_LINK_EVENT)},
 			{QStringLiteral("eventRoomId"), event.event.roomId},
 			{QStringLiteral("adapterRoomId"), m_roomId},
 			{QStringLiteral("senderPlayerId"), event.event.senderPlayerId},
@@ -152,7 +152,7 @@ void SessionMessageAdapter::handleServerEvent(const ServerInboundLinkEvent& even
 	const int senderPlayerId = event.event.senderPlayerId;
 	if (senderPlayerId < 0) {
 		_reportProtocolError(112, QStringLiteral("inboundLinkEvent has invalid senderPlayerId"), NetplayErrorCategory::ProtocolMismatch, event.event.sequence, -1, {
-			{QStringLiteral("eventKind"), QStringLiteral(SERVER_EVENT_INBOUND_LINK_EVENT)},
+			{QStringLiteral("eventKind"), QString::fromLatin1(SERVER_EVENT_INBOUND_LINK_EVENT)},
 			{QStringLiteral("senderPlayerId"), senderPlayerId},
 			{QStringLiteral("sequence"), event.event.sequence},
 		});
@@ -161,7 +161,7 @@ void SessionMessageAdapter::handleServerEvent(const ServerInboundLinkEvent& even
 
 	if (event.event.tickMarker < 0) {
 		_reportProtocolError(113, QStringLiteral("inboundLinkEvent has malformed tick marker"), NetplayErrorCategory::MalformedMessage, event.event.sequence, -1, {
-			{QStringLiteral("eventKind"), QStringLiteral(SERVER_EVENT_INBOUND_LINK_EVENT)},
+			{QStringLiteral("eventKind"), QString::fromLatin1(SERVER_EVENT_INBOUND_LINK_EVENT)},
 			{QStringLiteral("senderPlayerId"), senderPlayerId},
 			{QStringLiteral("tickMarker"), event.event.tickMarker},
 		});
@@ -170,7 +170,7 @@ void SessionMessageAdapter::handleServerEvent(const ServerInboundLinkEvent& even
 
 	if (!m_knownPlayers.contains(senderPlayerId)) {
 		_reportProtocolError(104, QStringLiteral("Link event from unknown player"), NetplayErrorCategory::ProtocolMismatch, event.event.sequence, -1, {
-			{QStringLiteral("eventKind"), QStringLiteral(SERVER_EVENT_INBOUND_LINK_EVENT)},
+			{QStringLiteral("eventKind"), QString::fromLatin1(SERVER_EVENT_INBOUND_LINK_EVENT)},
 			{QStringLiteral("senderPlayerId"), senderPlayerId},
 			{QStringLiteral("sequence"), event.event.sequence},
 		});
@@ -180,7 +180,7 @@ void SessionMessageAdapter::handleServerEvent(const ServerInboundLinkEvent& even
 	const qint64 lastSequence = m_lastInboundSequenceByPlayer.value(senderPlayerId, -1);
 	if (event.event.sequence < lastSequence) {
 		_reportProtocolError(105, QStringLiteral("Out-of-order link event sequence"), NetplayErrorCategory::MalformedMessage, event.event.sequence, lastSequence + 1, {
-			{QStringLiteral("eventKind"), QStringLiteral(SERVER_EVENT_INBOUND_LINK_EVENT)},
+			{QStringLiteral("eventKind"), QString::fromLatin1(SERVER_EVENT_INBOUND_LINK_EVENT)},
 			{QStringLiteral("senderPlayerId"), senderPlayerId},
 			{QStringLiteral("lastSequence"), lastSequence},
 			{QStringLiteral("receivedSequence"), event.event.sequence},
@@ -190,7 +190,7 @@ void SessionMessageAdapter::handleServerEvent(const ServerInboundLinkEvent& even
 
 	if (event.event.sequence == lastSequence) {
 		_reportProtocolError(114, QStringLiteral("Duplicate link event sequence dropped"), NetplayErrorCategory::ProtocolMismatch, event.event.sequence, lastSequence + 1, {
-			{QStringLiteral("eventKind"), QStringLiteral(SERVER_EVENT_INBOUND_LINK_EVENT)},
+			{QStringLiteral("eventKind"), QString::fromLatin1(SERVER_EVENT_INBOUND_LINK_EVENT)},
 			{QStringLiteral("policy"), QStringLiteral("drop_duplicate_event")},
 			{QStringLiteral("senderPlayerId"), senderPlayerId},
 			{QStringLiteral("lastSequence"), lastSequence},
@@ -208,7 +208,7 @@ void SessionMessageAdapter::handleServerEvent(const ServerInboundLinkEvent& even
 void SessionMessageAdapter::handleServerEvent(const ServerDisconnectedEvent& event) {
 	if (!m_roomId.isEmpty() && !event.roomId.isEmpty() && event.roomId != m_roomId) {
 		_reportProtocolError(115, QStringLiteral("disconnected room mismatch"), NetplayErrorCategory::ProtocolMismatch, -1, -1, {
-			{QStringLiteral("eventKind"), QStringLiteral(SERVER_EVENT_DISCONNECTED)},
+			{QStringLiteral("eventKind"), QString::fromLatin1(SERVER_EVENT_DISCONNECTED)},
 			{QStringLiteral("eventRoomId"), event.roomId},
 			{QStringLiteral("adapterRoomId"), m_roomId},
 		});
