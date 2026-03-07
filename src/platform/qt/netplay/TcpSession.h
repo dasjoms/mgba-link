@@ -52,7 +52,15 @@ private:
 	void _drainFrames();
 	void _handleFrame(const QByteArray& payload);
 	bool _hasActiveRoom() const;
-	void _dispatchProtocolError(int code, const QString& message, NetplayErrorCategory category = NetplayErrorCategory::ProtocolMismatch, qint64 sequence = -1, qint64 expectedSequence = -1, const QVariantMap& details = QVariantMap());
+	void _dispatchProtocolError(int code, const QString& message,
+		NetplayErrorCategory category = NetplayErrorCategory::ProtocolMismatch,
+		qint64 sequence = -1,
+		qint64 expectedSequence = -1,
+		const QVariantMap& details = QVariantMap(),
+		const QString& direction = QString(),
+		const QString& kind = QString(),
+		qint64 serverSequence = -1,
+		const QString& playerId = QString());
 
 	QTcpSocket m_socket;
 	QByteArray m_receiveBuffer;
