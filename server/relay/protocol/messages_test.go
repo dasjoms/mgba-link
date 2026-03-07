@@ -52,6 +52,17 @@ func TestPublishLinkEventPayloadBounds(t *testing.T) {
 	}
 }
 
+func TestCreateRoomMaxPlayersRange(t *testing.T) {
+	tooSmall := []byte(`{"intent":"createRoom","clientSequence":1,"roomName":"r","maxPlayers":1}`)
+	if _, violation := ParseAndValidateClientIntent(tooSmall); violation == nil || violation.Code != 400 {
+		t.Fatalf("expected 400 for maxPlayers<2, got %#v", violation)
+	}
+	tooLarge := []byte(`{"intent":"createRoom","clientSequence":1,"roomName":"r","maxPlayers":5}`)
+	if _, violation := ParseAndValidateClientIntent(tooLarge); violation == nil || violation.Code != 400 {
+		t.Fatalf("expected 400 for maxPlayers>4, got %#v", violation)
+	}
+}
+
 func TestProtocolVersionMismatchDeterministicAcrossIntents(t *testing.T) {
 	tests := []string{
 		`{"intent":"createRoom","clientSequence":1,"protocolVersion":2,"roomName":"r","maxPlayers":2}`,
