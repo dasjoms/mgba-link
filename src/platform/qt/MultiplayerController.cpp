@@ -340,6 +340,7 @@ void MultiplayerController::detachPlayerFromBackend(Player& player, mCoreThread*
 void MultiplayerController::clearRemoteSessionBookkeeping() {
 	m_remotePlayerCount = 0;
 	m_remotePlayerId = -1;
+	m_pendingRemoteRoomAction = PendingRemoteRoomAction::None;
 }
 
 bool MultiplayerController::isRemoteNetDriverActive() const {
@@ -455,10 +456,12 @@ bool MultiplayerController::startConfiguredRemoteSession(std::unique_ptr<Netplay
 	connectRequest.options[QStringLiteral("roomMode")] = createRoom ? QStringLiteral("create") : QStringLiteral("join");
 
 	if (!m_remoteSession->connect(connectRequest)) {
+		emitControllerRemoteSessionError(20, QStringLiteral("Failed to connect remote session"), Netplay::NetplayErrorCategory::ConnectionFailure, QStringLiteral("connect"));
 		stopRemoteSession();
 		return false;
 	}
 
+	m_pendingRemoteRoomAction = createRoom ? PendingRemoteRoomAction::CreateRoom : PendingRemoteRoomAction::JoinRoom;
 	return true;
 }
 
@@ -470,9 +473,53 @@ void MultiplayerController::onRemoteSessionStateChanged(Netplay::SessionState st
 		clearRemoteSessionBookkeeping();
 		return;
 	}
+
+	if (state == Netplay::SessionState::Connected) {
+		dispatchPendingRemoteRoomAction();
+	}
+
 	refreshRemoteSessionBookkeepingFromSession();
 }
 
+
+void MultiplayerController::emitControllerRemoteSessionError(int code, const QString& message, Netplay::NetplayErrorCategory category, const QString& action) {
+	Netplay::SessionProtocolError error;
+	error.code = code;
+	error.message = message;
+	error.category = category;
+	error.layer = Netplay::NetplayFailureLayer::ControllerIntegration;
+	error.endpoint = m_remoteSessionConfig.endpoint();
+	error.roomId = m_remoteSessionConfig.room;
+	error.details[QStringLiteral("action")] = action;
+	onRemoteSessionProtocolError(error);
+}
+
+void MultiplayerController::dispatchPendingRemoteRoomAction() {
+	if (!m_remoteSession || m_pendingRemoteRoomAction == PendingRemoteRoomAction::None) {
+		return;
+	}
+
+	const PendingRemoteRoomAction action = m_pendingRemoteRoomAction;
+	m_pendingRemoteRoomAction = PendingRemoteRoomAction::None;
+
+	if (action == PendingRemoteRoomAction::CreateRoom) {
+		Netplay::SessionCreateRoomRequest request;
+		request.roomName = m_remoteSessionConfig.room;
+		request.maxPeers = 4;
+		if (!m_remoteSession->createRoom(request)) {
+			emitControllerRemoteSessionError(21, QStringLiteral("Failed to create room"), Netplay::NetplayErrorCategory::RoomRejectedOrFull, QStringLiteral("createRoom"));
+			stopRemoteSession();
+		}
+		return;
+	}
+
+	Netplay::SessionJoinRoomRequest request;
+	request.roomId = m_remoteSessionConfig.room;
+	if (!m_remoteSession->joinRoom(request)) {
+		emitControllerRemoteSessionError(22, QStringLiteral("Failed to join room"), Netplay::NetplayErrorCategory::RoomRejectedOrFull, QStringLiteral("joinRoom"));
+		stopRemoteSession();
+	}
+}
 void MultiplayerController::onRemoteSessionPeerJoined(const Netplay::SessionPeer& peer) {
 	if (isRemoteNetDriverActive() && m_remoteDriverBridge) {
 		const int playerId = parseRemotePlayerId(peer.peerId);

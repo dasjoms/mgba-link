@@ -246,6 +246,11 @@ set(TEST_QT_netplay_driver_bridge_SRC
 	test/netplay-driver-bridge.cpp
 	netplay/DriverEventQueueBridge.cpp)
 
+set(TEST_QT_multiplayer_controller_SRC
+	test/multiplayer-controller.cpp
+	MultiplayerController.cpp
+	netplay/DriverEventQueueBridge.cpp)
+
 set(CPACK_DEBIAN_PACKAGE_DEPENDS "${CPACK_DEBIAN_PACKAGE_DEPENDS},libqt${QT_V}widgets${QT_V}")
 
 set(AUDIO_SRC)
