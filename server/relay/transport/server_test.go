@@ -48,6 +48,16 @@ func readEvent(t *testing.T, c net.Conn) map[string]any {
 	return evt
 }
 
+func mustHello(t *testing.T, c net.Conn, token string) {
+	t.Helper()
+	msg := `{"intent":"hello","protocolVersion":1,"clientSequence":0}`
+	if token != "" {
+		msg = `{"intent":"hello","protocolVersion":1,"authToken":"` + token + `","clientSequence":0}`
+	}
+	writeIntent(t, c, msg)
+	_ = readEvent(t, c)
+}
+
 func TestRejectNonHandshakeIntentBeforeHello(t *testing.T) {
 	s := testServer(t, "")
 	client, server := net.Pipe()
@@ -94,5 +104,39 @@ func TestPlayerAssignedOnlyAfterSuccessfulHello(t *testing.T) {
 	evt := readEvent(t, client)
 	if evt["kind"] != "playerAssigned" {
 		t.Fatalf("expected playerAssigned after successful hello, got %#v", evt)
+	}
+}
+
+func TestPublishLinkEventSequenceValidationAndServerSequenceOrdering(t *testing.T) {
+	s := testServer(t, "")
+	c1, s1 := net.Pipe()
+	defer c1.Close()
+	go s.handleConn(s1)
+	c2, s2 := net.Pipe()
+	defer c2.Close()
+	go s.handleConn(s2)
+
+	mustHello(t, c1, "")
+	mustHello(t, c2, "")
+
+	writeIntent(t, c1, `{"intent":"createRoom","clientSequence":1,"roomName":"r1","maxPlayers":4}`)
+	_ = readEvent(t, c1) // playerAssigned in room
+	_ = readEvent(t, c1) // roomJoined
+
+	writeIntent(t, c2, `{"intent":"joinRoom","clientSequence":1,"roomId":"r1"}`)
+	_ = readEvent(t, c2) // playerAssigned in room
+	_ = readEvent(t, c2) // roomJoined
+
+	writeIntent(t, c1, `{"intent":"publishLinkEvent","clientSequence":2,"event":{"sequence":1,"senderPlayerId":99,"tickMarker":5,"payload":"AQ=="}}`)
+	in1a := readEvent(t, c1)
+	in1b := readEvent(t, c2)
+	if int(in1a["serverSequence"].(float64)) != 1 || int(in1b["serverSequence"].(float64)) != 1 {
+		t.Fatalf("expected serverSequence 1 for first publish, got c1=%#v c2=%#v", in1a, in1b)
+	}
+
+	writeIntent(t, c1, `{"intent":"publishLinkEvent","clientSequence":3,"event":{"sequence":1,"senderPlayerId":99,"tickMarker":6,"payload":"AQ=="}}`)
+	errEvt := readEvent(t, c1)
+	if errEvt["kind"] != "error" || int(errEvt["code"].(float64)) != 409 {
+		t.Fatalf("expected sequence conflict error 409, got %#v", errEvt)
 	}
 }

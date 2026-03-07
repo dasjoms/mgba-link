@@ -137,8 +137,8 @@ func ParseAndValidateClientIntent(payload []byte) (*ClientIntent, *ProtocolViola
 		if err := requireString("roomName", decoded.RoomName); err != nil {
 			return nil, err
 		}
-		if _, ok := root["maxPlayers"]; !ok || decoded.MaxPlayers <= 0 {
-			return nil, &ProtocolViolation{Code: 400, Message: "missing or invalid required field: maxPlayers", Reason: "protocolError"}
+		if _, ok := root["maxPlayers"]; !ok || decoded.MaxPlayers < 2 || decoded.MaxPlayers > 4 {
+			return nil, &ProtocolViolation{Code: 400, Message: "missing or invalid required field: maxPlayers (must be 2-4)", Reason: "protocolError"}
 		}
 	case "joinRoom":
 		if err := requireSupportedProtocolIfPresent(); err != nil {
