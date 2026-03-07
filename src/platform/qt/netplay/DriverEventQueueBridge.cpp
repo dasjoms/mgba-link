@@ -64,10 +64,53 @@ bool DriverEventQueueBridge::enqueueTransferResult(int senderPlayerId, int targe
 	return pushInbound(event);
 }
 
+bool DriverEventQueueBridge::enqueueModeSet(int senderPlayerId, int playerId, int mode, int64_t sequence) {
+	GBASIONetEvent event = {
+		.type = GBA_SIO_NET_EV_MODE_SET,
+		.senderPlayerId = senderPlayerId,
+		.sequence = sequence,
+		.modeSet = {
+			.playerId = playerId,
+			.mode = static_cast<GBASIOMode>(mode),
+		},
+	};
+	return pushInbound(event);
+}
+
+bool DriverEventQueueBridge::enqueueTransferStart(int senderPlayerId, int playerId, int mode, int32_t finishCycle, int64_t sequence) {
+	GBASIONetEvent event = {
+		.type = GBA_SIO_NET_EV_TRANSFER_START,
+		.senderPlayerId = senderPlayerId,
+		.sequence = sequence,
+		.transferStart = {
+			.playerId = playerId,
+			.mode = static_cast<GBASIOMode>(mode),
+			.finishCycle = finishCycle,
+		},
+	};
+	return pushInbound(event);
+}
+
+bool DriverEventQueueBridge::enqueueHardSync(int senderPlayerId, int32_t tickMarker, int64_t sequence) {
+	GBASIONetEvent event = {
+		.type = GBA_SIO_NET_EV_HARD_SYNC,
+		.senderPlayerId = senderPlayerId,
+		.sequence = sequence,
+		.hardSync = {
+			.tickMarker = tickMarker,
+		},
+	};
+	return pushInbound(event);
+}
+
 bool DriverEventQueueBridge::enqueuePeerAttach(int playerId, int64_t sequence) {
+	return enqueuePeerAttach(playerId, playerId, sequence);
+}
+
+bool DriverEventQueueBridge::enqueuePeerAttach(int senderPlayerId, int playerId, int64_t sequence) {
 	GBASIONetEvent event = {
 		.type = GBA_SIO_NET_EV_PEER_ATTACH,
-		.senderPlayerId = playerId,
+		.senderPlayerId = senderPlayerId,
 		.sequence = sequence,
 		.peerAttach = {
 			.playerId = playerId,
@@ -77,9 +120,13 @@ bool DriverEventQueueBridge::enqueuePeerAttach(int playerId, int64_t sequence) {
 }
 
 bool DriverEventQueueBridge::enqueuePeerDetach(int playerId, int64_t sequence) {
+	return enqueuePeerDetach(playerId, playerId, sequence);
+}
+
+bool DriverEventQueueBridge::enqueuePeerDetach(int senderPlayerId, int playerId, int64_t sequence) {
 	GBASIONetEvent event = {
 		.type = GBA_SIO_NET_EV_PEER_DETACH,
-		.senderPlayerId = playerId,
+		.senderPlayerId = senderPlayerId,
 		.sequence = sequence,
 		.peerDetach = {
 			.playerId = playerId,
@@ -97,9 +144,13 @@ size_t DriverEventQueueBridge::pendingInboundDepth() const {
 }
 
 bool DriverEventQueueBridge::enqueueSessionFailure(GBASIONetSessionFailureKind kind, int code, int64_t sequence) {
+	return enqueueSessionFailure(-1, kind, code, sequence);
+}
+
+bool DriverEventQueueBridge::enqueueSessionFailure(int senderPlayerId, GBASIONetSessionFailureKind kind, int code, int64_t sequence) {
 	GBASIONetEvent event = {
 		.type = GBA_SIO_NET_EV_SESSION_FAILURE,
-		.senderPlayerId = -1,
+		.senderPlayerId = senderPlayerId,
 		.sequence = sequence,
 		.sessionFailure = {
 			.kind = kind,
