@@ -5,12 +5,18 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 #include "Window.h"
 
+#include <QAbstractButton>
 #include <QKeyEvent>
 #include <QKeySequence>
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QFormLayout>
+#include <QLineEdit>
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QMimeData>
 #include <QPainter>
+#include <QSpinBox>
 #include <QScreen>
 #include <QWindow>
 
@@ -51,6 +57,7 @@
 #include "MemorySearch.h"
 #include "MemoryView.h"
 #include "MultiplayerController.h"
+#include "netplay/TcpSession.h"
 #include "OverrideView.h"
 #include "ObjView.h"
 #include "PaletteView.h"
@@ -440,6 +447,105 @@ void Window::multiplayerChanged() {
 	for (auto& action : m_nonMpActions) {
 		action->setEnabled(attached < 2);
 	}
+}
+
+MultiplayerController* Window::multiplayerControllerForNetplayUi(bool requireController) const {
+	if (requireController && !m_controller) {
+		QMessageBox::information(const_cast<Window*>(this), tr("No game loaded"), tr("Load a game before using remote relay multiplayer."));
+		return nullptr;
+	}
+
+	MultiplayerController* multiplayer = m_controller ? m_controller->multiplayerController() : nullptr;
+	if (!multiplayer) {
+		QMessageBox::warning(const_cast<Window*>(this), tr("Multiplayer unavailable"), tr("Multiplayer controller is not available."));
+	}
+	return multiplayer;
+}
+
+void Window::configureAndStartRemoteSession(bool createRoom) {
+	MultiplayerController* multiplayer = multiplayerControllerForNetplayUi();
+	if (!multiplayer) {
+		return;
+	}
+
+	if (multiplayer->attached() > 1) {
+		QMessageBox::warning(this, tr("Multiplayer active"), tr("Close local multiplayer windows before starting a remote relay session."));
+		return;
+	}
+
+	QDialog dialog(this);
+	dialog.setWindowTitle(createRoom ? tr("Create remote relay room") : tr("Join remote relay room"));
+
+	QFormLayout* form = new QFormLayout(&dialog);
+	QLineEdit* hostEdit = new QLineEdit(&dialog);
+	QSpinBox* portEdit = new QSpinBox(&dialog);
+	QLineEdit* roomEdit = new QLineEdit(&dialog);
+	QLineEdit* secretEdit = new QLineEdit(&dialog);
+
+	const MultiplayerController::RemoteSessionConfig existing = multiplayer->remoteSessionConfig();
+	hostEdit->setText(existing.host);
+	hostEdit->setPlaceholderText(QStringLiteral("127.0.0.1"));
+
+	portEdit->setRange(1, 65535);
+	portEdit->setValue(existing.port ? existing.port : 5000);
+
+	roomEdit->setText(existing.room);
+	secretEdit->setText(existing.sharedSecret);
+	secretEdit->setPlaceholderText(tr("Optional"));
+	secretEdit->setEchoMode(QLineEdit::Password);
+
+	form->addRow(tr("Relay host"), hostEdit);
+	form->addRow(tr("Relay port"), portEdit);
+	form->addRow(createRoom ? tr("Room code") : tr("Room ID"), roomEdit);
+	form->addRow(tr("Shared secret"), secretEdit);
+
+	QDialogButtonBox* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+	buttons->button(QDialogButtonBox::Ok)->setText(createRoom ? tr("Create") : tr("Join"));
+	form->addRow(buttons);
+
+	connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+	connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+
+	if (dialog.exec() != QDialog::Accepted) {
+		return;
+	}
+
+	MultiplayerController::RemoteSessionConfig config;
+	config.host = hostEdit->text();
+	config.port = static_cast<quint16>(portEdit->value());
+	config.room = roomEdit->text();
+	config.sharedSecret = secretEdit->text();
+	multiplayer->setRemoteSessionConfig(std::move(config));
+	multiplayer->saveRemoteSessionConfig(m_config);
+
+	if (multiplayer->isRemoteSessionActive()) {
+		multiplayer->stopRemoteSession();
+	}
+
+	if (!multiplayer->startConfiguredRemoteSession(std::make_unique<Netplay::TcpSession>(), createRoom)) {
+		QMessageBox::critical(this, tr("Remote relay failed"), tr("Failed to start remote relay session. Check relay host, port, and room settings."));
+		return;
+	}
+
+	QMessageBox::information(this, tr("Remote relay"), createRoom
+		? tr("Remote relay room creation requested.")
+		: tr("Remote relay room join requested."));
+}
+
+void Window::createRemoteRelayRoom() {
+	configureAndStartRemoteSession(true);
+}
+
+void Window::joinRemoteRelayRoom() {
+	configureAndStartRemoteSession(false);
+}
+
+void Window::disconnectRemoteRelay() {
+	MultiplayerController* multiplayer = multiplayerControllerForNetplayUi(false);
+	if (!multiplayer) {
+		return;
+	}
+	multiplayer->stopRemoteSession();
 }
 
 void Window::selectPatch() {
@@ -1444,6 +1550,15 @@ void Window::setupMenu(QMenuBar* menubar) {
 
 	m_actions.addSeparator("file");
 	m_multiWindow = m_actions.addAction(tr("New multiplayer window"), "multiWindow", GBAApp::app(), &GBAApp::newWindow, "file");
+
+	m_actions.addMenu(tr("Remote relay netplay"), "remoteRelay", "file");
+	auto createRemoteRelayAction = addGameAction(tr("Create room..."), "remoteRelayCreate", this, &Window::createRemoteRelayRoom, "remoteRelay");
+	m_nonMpActions.append(createRemoteRelayAction);
+	auto joinRemoteRelayAction = addGameAction(tr("Join room..."), "remoteRelayJoin", this, &Window::joinRemoteRelayRoom, "remoteRelay");
+	m_nonMpActions.append(joinRemoteRelayAction);
+	m_actions.addSeparator("remoteRelay");
+	auto disconnectRemoteRelayAction = addGameAction(tr("Disconnect relay"), "remoteRelayDisconnect", this, &Window::disconnectRemoteRelay, "remoteRelay");
+	m_nonMpActions.append(disconnectRemoteRelayAction);
 
 #ifdef M_CORE_GBA
 	auto dolphin = m_actions.addAction(tr("Connect to Dolphin..."), "connectDolphin", openNamedTView<DolphinConnector>(&m_dolphinView, true, this), "file");
