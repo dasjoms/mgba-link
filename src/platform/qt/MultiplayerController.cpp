@@ -8,6 +8,7 @@
 #include "CoreController.h"
 #include "LogController.h"
 #include "utils.h"
+#include "netplay/Session.h"
 
 #ifdef M_CORE_GBA
 #include <mgba/internal/gba/gba.h>
@@ -191,6 +192,7 @@ MultiplayerController::MultiplayerController() {
 }
 
 MultiplayerController::~MultiplayerController() {
+	stopRemoteSession();
 	mLockstepDeinit(&m_lockstep);
 	deinitBackend();
 }
@@ -285,7 +287,107 @@ void MultiplayerController::detachPlayerFromBackend(Player& player, mCoreThread*
 	}
 }
 
+void MultiplayerController::clearRemoteSessionBookkeeping() {
+	m_remotePlayerCount = 0;
+	m_remotePlayerId = -1;
+}
+
+bool MultiplayerController::startRemoteSession(std::unique_ptr<Netplay::Session> session) {
+	if (!session || m_remoteSession || !m_pids.isEmpty()) {
+		return false;
+	}
+	clearRemoteSessionBookkeeping();
+	m_remoteSession = std::move(session);
+
+	Netplay::SessionCallbacks callbacks;
+	callbacks.onStateChanged = [this](Netplay::SessionState state) {
+		onRemoteSessionStateChanged(state);
+	};
+	callbacks.onPeerJoined = [this](const Netplay::SessionPeer& peer) {
+		onRemoteSessionPeerJoined(peer);
+	};
+	callbacks.onPeerLeft = [this](const Netplay::SessionPeer& peer) {
+		onRemoteSessionPeerLeft(peer);
+	};
+	callbacks.onProtocolError = [this](const Netplay::SessionProtocolError& error) {
+		onRemoteSessionProtocolError(error);
+	};
+	m_remoteSession->setCallbacks(std::move(callbacks));
+	refreshRemoteSessionBookkeepingFromSession();
+	return true;
+}
+
+void MultiplayerController::stopRemoteSession() {
+	if (!m_remoteSession) {
+		return;
+	}
+	m_remoteSession->disconnect();
+	m_remoteSession.reset();
+	clearRemoteSessionBookkeeping();
+}
+
+bool MultiplayerController::isRemoteSessionActive() const {
+	return !!m_remoteSession;
+}
+
+int MultiplayerController::remotePlayerCount() const {
+	return m_remotePlayerCount;
+}
+
+int MultiplayerController::remotePlayerId() const {
+	return m_remotePlayerId;
+}
+
+void MultiplayerController::onRemoteSessionStateChanged(Netplay::SessionState state) {
+	if (state == Netplay::SessionState::Disconnected || state == Netplay::SessionState::Error) {
+		clearRemoteSessionBookkeeping();
+		return;
+	}
+	refreshRemoteSessionBookkeepingFromSession();
+}
+
+void MultiplayerController::onRemoteSessionPeerJoined(const Netplay::SessionPeer& peer) {
+	Q_UNUSED(peer);
+	refreshRemoteSessionBookkeepingFromSession();
+}
+
+void MultiplayerController::onRemoteSessionPeerLeft(const Netplay::SessionPeer& peer) {
+	Q_UNUSED(peer);
+	refreshRemoteSessionBookkeepingFromSession();
+}
+
+void MultiplayerController::onRemoteSessionProtocolError(const Netplay::SessionProtocolError& error) {
+	LOG(QT, ERROR) << tr("Remote netplay protocol error (%0): %1").arg(error.code).arg(error.message);
+	clearRemoteSessionBookkeeping();
+}
+
+void MultiplayerController::refreshRemoteSessionBookkeepingFromSession() {
+	if (!m_remoteSession) {
+		clearRemoteSessionBookkeeping();
+		return;
+	}
+	const Netplay::SessionRoom room = m_remoteSession->room();
+	const Netplay::SessionPeer localPeer = m_remoteSession->localPeer();
+	m_remotePlayerCount = room.peers.size();
+	bool hasLocalPeer = false;
+	for (const auto& peer : room.peers) {
+		if (peer.peerId == localPeer.peerId) {
+			hasLocalPeer = true;
+			break;
+		}
+	}
+	if (!localPeer.peerId.isEmpty() && !hasLocalPeer) {
+		++m_remotePlayerCount;
+	}
+	bool ok = false;
+	const int parsedId = localPeer.peerId.toInt(&ok);
+	m_remotePlayerId = ok ? parsedId : -1;
+}
+
 bool MultiplayerController::attachGame(CoreController* controller) {
+	if (m_remoteSession) {
+		return false;
+	}
 	QList<CoreController::Interrupter> interrupters;
 	interrupters.append(controller);
 	for (Player& p : m_pids.values()) {

@@ -26,6 +26,13 @@ struct GBASIOLockstepNode;
 
 namespace QGBA {
 
+namespace Netplay {
+class Session;
+enum class SessionState;
+struct SessionPeer;
+struct SessionProtocolError;
+}
+
 class CoreController;
 
 class MultiplayerController : public QObject {
@@ -41,6 +48,12 @@ public:
 	int attached();
 	int playerId(CoreController*) const;
 	int saveId(CoreController*) const;
+
+	bool startRemoteSession(std::unique_ptr<Netplay::Session> session);
+	void stopRemoteSession();
+	bool isRemoteSessionActive() const;
+	int remotePlayerCount() const;
+	int remotePlayerId() const;
 
 signals:
 	void gameAttached();
@@ -80,6 +93,12 @@ private:
 	bool attachPlayerToBackend(Player& player, bool delayedAttach);
 	void detachPlayerFromBackend(Player& player, mCoreThread* thread);
 	void setPlayerAttached(Player& player, bool attached);
+	void clearRemoteSessionBookkeeping();
+	void onRemoteSessionStateChanged(Netplay::SessionState state);
+	void onRemoteSessionPeerJoined(const Netplay::SessionPeer& peer);
+	void onRemoteSessionPeerLeft(const Netplay::SessionPeer& peer);
+	void onRemoteSessionProtocolError(const Netplay::SessionProtocolError& error);
+	void refreshRemoteSessionBookkeepingFromSession();
 
 	union {
 		mLockstep m_lockstep;
@@ -99,6 +118,9 @@ private:
 	QList<int> m_players;
 	QMutex m_lock;
 	QHash<QPair<QString, QString>, int> m_claimedSaves;
+	std::unique_ptr<Netplay::Session> m_remoteSession;
+	int m_remotePlayerCount = 0;
+	int m_remotePlayerId = -1;
 };
 
 }
