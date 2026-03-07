@@ -240,6 +240,7 @@ set(TEST_QT_session_message_adapter_SRC
 set(TEST_QT_netplay_codec_SRC
 	test/netplay-codec.cpp
 	netplay/NetplayCodec.cpp
+	netplay/SessionMessageAdapter.cpp
 	netplay/TcpSession.cpp)
 
 set(TEST_QT_netplay_driver_bridge_SRC

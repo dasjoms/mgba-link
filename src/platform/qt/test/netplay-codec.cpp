@@ -134,6 +134,7 @@ private slots:
 		QCOMPARE(protocolErrors.front().code, 12);
 	}
 
+
 	void compatibilityChecks() {
 		DecodedMessage withUnknownOptional = decodeFrame(QByteArrayLiteral(R"({"kind":"roomJoined","roomId":"room-1","roomName":"Room","maxPlayers":2,"futureOptional":"ok"})"));
 		QVERIFY(withUnknownOptional.isValid());

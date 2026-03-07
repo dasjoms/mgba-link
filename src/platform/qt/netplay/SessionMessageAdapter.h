@@ -37,6 +37,7 @@ public:
 	};
 
 	SessionMessageAdapter();
+	void resetState();
 
 	void setControllerCallbacks(ControllerCallbacks callbacks);
 

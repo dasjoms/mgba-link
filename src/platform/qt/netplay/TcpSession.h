@@ -11,6 +11,7 @@
 #include <QTcpSocket>
 
 #include "netplay/Session.h"
+#include "netplay/SessionMessageAdapter.h"
 
 namespace QGBA {
 namespace Netplay {
@@ -52,6 +53,9 @@ private:
 	void _drainFrames();
 	void _handleFrame(const QByteArray& payload);
 	bool _hasActiveRoom() const;
+	void _wireAdapterCallbacks();
+	void _resetSessionState();
+	void _routeDecodedServerEvent(const QString& kind, const QVariantMap& event, qint64 serverSequence);
 	void _dispatchProtocolError(int code, const QString& message,
 		NetplayErrorCategory category = NetplayErrorCategory::ProtocolMismatch,
 		qint64 sequence = -1,
@@ -77,6 +81,7 @@ private:
 	QString m_buildTag;
 	int m_protocolVersion = 1;
 	bool m_handshakeCompleted = false;
+	SessionMessageAdapter m_messageAdapter;
 	qint64 m_expectedServerSequence = -1;
 	qint64 m_nextSequence = 0;
 	qint64 m_heartbeatCounter = 0;

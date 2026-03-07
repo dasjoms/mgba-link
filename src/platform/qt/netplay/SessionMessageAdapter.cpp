@@ -15,6 +15,11 @@ namespace Netplay {
 
 SessionMessageAdapter::SessionMessageAdapter() = default;
 
+void SessionMessageAdapter::resetState() {
+	_resetRoomState();
+	m_nextOutboundSequence = 0;
+}
+
 void SessionMessageAdapter::setControllerCallbacks(ControllerCallbacks callbacks) {
 	m_callbacks = std::move(callbacks);
 }
@@ -222,7 +227,15 @@ void SessionMessageAdapter::handleServerEvent(const ServerDisconnectedEvent& eve
 }
 
 void SessionMessageAdapter::handleServerEvent(const ServerErrorEvent& event) {
-	_reportProtocolError(event.code, event.message, NetplayErrorCategory::ProtocolMismatch);
+	NetplayErrorCategory category = NetplayErrorCategory::ProtocolMismatch;
+	const QString lowerMessage = event.message.toLower();
+	if (event.code == 403 || event.code == 409 || event.code == 429
+			|| lowerMessage.contains(QStringLiteral("full"))
+			|| lowerMessage.contains(QStringLiteral("reject"))
+			|| lowerMessage.contains(QStringLiteral("denied"))) {
+		category = NetplayErrorCategory::RoomRejectedOrFull;
+	}
+	_reportProtocolError(event.code, event.message, category);
 }
 
 int SessionMessageAdapter::localPlayerId() const {
