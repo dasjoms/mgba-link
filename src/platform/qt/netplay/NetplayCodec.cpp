@@ -452,6 +452,10 @@ DecodedMessage decodeFrame(const QByteArray& payload) {
 		return decoded;
 	}
 
+	if (decoded.kind == QStringLiteral(SERVER_EVENT_LINK_EVENT_ALIAS)) {
+		decoded.kind = QStringLiteral(SERVER_EVENT_INBOUND_LINK_EVENT);
+	}
+
 	if (decoded.kind == QStringLiteral(SERVER_EVENT_ROOM_JOINED)) {
 		error = _validateRoomJoined(message);
 	} else if (decoded.kind == QStringLiteral(SERVER_EVENT_PLAYER_ASSIGNED)) {

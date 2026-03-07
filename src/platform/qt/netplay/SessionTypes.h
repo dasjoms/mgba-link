@@ -70,6 +70,8 @@ static constexpr const char* SERVER_EVENT_PLAYER_ASSIGNED = "playerAssigned";
 static constexpr const char* SERVER_EVENT_PEER_JOINED = "peerJoined";
 static constexpr const char* SERVER_EVENT_PEER_LEFT = "peerLeft";
 static constexpr const char* SERVER_EVENT_INBOUND_LINK_EVENT = "inboundLinkEvent";
+// Compatibility alias accepted by decoder; canonical kind is inboundLinkEvent.
+static constexpr const char* SERVER_EVENT_LINK_EVENT_ALIAS = "linkEvent";
 static constexpr const char* SERVER_EVENT_HEARTBEAT_ACK = "heartbeatAck";
 static constexpr const char* SERVER_EVENT_ERROR = "error";
 static constexpr const char* SERVER_EVENT_DISCONNECTED = "disconnected";

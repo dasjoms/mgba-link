@@ -239,10 +239,12 @@ Message routing and responsibilities are defined by top-level discriminator:
 
 Server must produce consistent events with v1 semantics:
 
+Compatibility note: decoders may accept legacy `kind: "linkEvent"` as an alias, but emit/normalize to canonical `kind: "inboundLinkEvent"`.
+
 - `playerAssigned`: confirms identity/slot for this connection.
 - `peerJoined`: announces a new room participant to existing peers.
 - `peerLeft`: announces participant departure.
-- `linkEvent`: rebroadcasted gameplay event with canonical `serverSequence`.
+- `inboundLinkEvent`: rebroadcasted gameplay event with canonical `serverSequence`.
 - `heartbeatAck`: acknowledges most recent heartbeat handling.
 - `error`: machine-actionable failure with `code` + message.
 - `disconnected`: terminal reason before connection close whenever feasible.
@@ -260,7 +262,7 @@ Canonical processing algorithm:
 1. Accept inbound `publishLinkEvent` from an authenticated client in a joined room.
 2. Validate sender ordering (`event.sequence` strictly increasing for that sender connection/player).
 3. Atomically reserve next room `serverSequence` value.
-4. Attach reserved `serverSequence` to outbound `linkEvent`.
+4. Attach reserved `serverSequence` to outbound `inboundLinkEvent`.
 5. Fan out to recipients preserving ascending `serverSequence` emission order.
 
 Non-negotiable ordering rules:
@@ -276,7 +278,7 @@ Heartbeat behavior is liveness-critical and should be deterministic:
 
 - ACK trigger: every valid inbound `heartbeat` intent receives one `heartbeatAck`.
 - ACK timing target: immediate on receive-path completion (recommended under 1 second).
-- ACK ordering: `heartbeatAck` must not overtake already-queued earlier `linkEvent` frames for that connection.
+- ACK ordering: `heartbeatAck` must not overtake already-queued earlier `inboundLinkEvent` frames for that connection.
 
 Timeout semantics:
 
@@ -387,11 +389,11 @@ Illustrative sequence (JSON payloads only; each payload is carried in framed tra
 }
 ```
 
-8) Server -> Room participants (`linkEvent` rebroadcast with canonical `serverSequence`)
+8) Server -> Room participants (`inboundLinkEvent` rebroadcast with canonical `serverSequence`)
 
 ```json
 {
-  "kind": "linkEvent",
+  "kind": "inboundLinkEvent",
   "roomId": "room-42",
   "serverSequence": 98,
   "event": {

@@ -51,9 +51,13 @@ function(find_feature FEATURE_NAME FEATURE_REQUIRES)
 		set(FOUND OFF)
 		foreach(REQUIRE ${NAMELIST})
 			if(NOT ${REQUIRE}_FOUND)
-				find_package(${REQUIRE} ${FIND_VERSION} QUIET)
+				# Prefer pkg-config lookups first so a broken CMake package config
+				# (e.g. distro libzip packages that reference missing helper
+				# binaries such as zipcmp/zipmerge) does not abort configuration
+				# before we can fall back to disabling the feature.
+				pkg_search_module(${REQUIRE} "${REQUIRE}${PKG_CONFIG_VERSION_CHECK}")
 				if(NOT ${REQUIRE}_FOUND)
-					pkg_search_module(${REQUIRE} "${REQUIRE}${PKG_CONFIG_VERSION_CHECK}")
+					find_package(${REQUIRE} ${FIND_VERSION} QUIET)
 				endif()
 			endif()
 			if(${REQUIRE}_FOUND)
