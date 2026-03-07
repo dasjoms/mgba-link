@@ -100,6 +100,9 @@ public slots:
 	void replaceROM();
 
 	void multiplayerChanged();
+	void createRemoteRelayRoom();
+	void joinRemoteRelayRoom();
+	void disconnectRemoteRelay();
 
 	void importSharkport();
 	void exportSharkport();
@@ -173,6 +176,8 @@ private:
 	void setupMenu(QMenuBar*);
 	void setupOptions();
 	void openStateWindow(LoadSave);
+	void configureAndStartRemoteSession(bool createRoom);
+	MultiplayerController* multiplayerControllerForNetplayUi(bool requireController = true) const;
 
 	void attachWidget(QWidget* widget);
 	void detachWidget();
