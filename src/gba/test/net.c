@@ -119,7 +119,7 @@ M_TEST_DEFINE(startStallsUntilInboundResultThenFinishConsumes) {
 	struct GBASIONetEvent event = _resultEvent(1, payload, sizeof(payload));
 	inbound.queue.vtable->push(&inbound.queue, &event);
 	assert_true(net.d.start(&net.d));
-	assert_int_equal(net.transferOrdinal, 2);
+	assert_int_equal(net.transferOrdinal, 1);
 	assert_int_equal(net.d.finishNormal8(&net.d), 0x5A);
 	assert_false(net.transferArmed);
 	assert_int_equal(net.state, GBA_SIO_NET_IN_ROOM);
@@ -284,6 +284,51 @@ M_TEST_DEFINE(peerDetachDuringTransferTriggersDeterministicDegradePath) {
 }
 
 
+M_TEST_DEFINE(controlEventsApplyBeforeStateGate) {
+	struct GBASIONetDriver net;
+	struct TestQueue inbound;
+	_initQueue(&inbound);
+	GBASIONetDriverCreate(&net);
+	GBASIONetDriverSetQueues(&net, NULL, &inbound.queue);
+	net.state = GBA_SIO_NET_IN_ROOM;
+	net.localPlayerId = 1;
+	net.mode = GBA_SIO_NORMAL_8;
+	assert_false(net.d.start(&net.d));
+
+	struct GBASIONetEvent failure = {
+		.type = GBA_SIO_NET_EV_SESSION_FAILURE,
+		.sessionFailure = { .kind = GBA_SIO_NET_FAIL_DISCONNECTED, .code = 42 },
+	};
+	assert_true(inbound.queue.vtable->push(&inbound.queue, &failure));
+	assert_false(net.d.start(&net.d));
+	assert_true(net.sessionDisconnected);
+	assert_int_equal(net.lastFailureCode, 42);
+	assert_int_equal(net.state, GBA_SIO_NET_DISCONNECTED);
+}
+
+M_TEST_DEFINE(protocolErrorStateNotOverwrittenByTransferStart) {
+	struct GBASIONetDriver net;
+	struct TestQueue inbound;
+	_initQueue(&inbound);
+	GBASIONetDriverCreate(&net);
+	GBASIONetDriverSetQueues(&net, NULL, &inbound.queue);
+	net.state = GBA_SIO_NET_IN_ROOM;
+	net.localPlayerId = 1;
+	net.attachedPlayerMask = (1U << 1) | (1U << 2);
+	net.roomPlayerCount = 2;
+	net.mode = GBA_SIO_NORMAL_8;
+	assert_false(net.d.start(&net.d));
+
+	struct GBASIONetEvent detach = {
+		.type = GBA_SIO_NET_EV_PEER_DETACH,
+		.peerDetach = { .playerId = 2 },
+	};
+	assert_true(inbound.queue.vtable->push(&inbound.queue, &detach));
+	assert_false(net.d.start(&net.d));
+	assert_true(net.protocolError);
+	assert_int_equal(net.state, GBA_SIO_NET_DEGRADED);
+}
+
 M_TEST_DEFINE(repeatedLateMissesTransitionToPersistentDegradedPolicy) {
 	struct GBASIONetDriver net;
 	GBASIONetDriverCreate(&net);
@@ -337,4 +382,6 @@ M_TEST_SUITE_DEFINE(GBANet,
 	cmocka_unit_test(loadStateRejectsConnectedSessionByPolicy),
 	cmocka_unit_test(peerDetachDuringTransferTriggersDeterministicDegradePath),
 	cmocka_unit_test(repeatedLateMissesTransitionToPersistentDegradedPolicy),
-	cmocka_unit_test(sessionDisconnectMidTransferForcesDeterministicFallbackAndBlocksStart))
+	cmocka_unit_test(sessionDisconnectMidTransferForcesDeterministicFallbackAndBlocksStart),
+	cmocka_unit_test(controlEventsApplyBeforeStateGate),
+	cmocka_unit_test(protocolErrorStateNotOverwrittenByTransferStart))
