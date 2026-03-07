@@ -51,3 +51,39 @@ Transport uses 4-byte big-endian length-prefixed framing, followed by UTF-8 JSON
 - Client -> server uses top-level discriminator `intent` (`hello`, `createRoom`, `joinRoom`, `leaveRoom`, `heartbeat`, `publishLinkEvent`).
 - Server -> client uses top-level discriminator `kind` (`playerAssigned`, `roomJoined`, `inboundLinkEvent`, `heartbeatAck`, `error`, `disconnected`).
 - Hard protocol violations emit `error` and then `disconnected` before socket close.
+
+## Troubleshooting
+
+The relay emits structured JSON logs for inbound/outbound message flow, state transitions, and protocol violations. Sensitive fields (for example `authToken`, `token`, and `secret`) are redacted before being written.
+
+Capture logs while running the server:
+
+```bash
+go run . --bind 0.0.0.0 --port 41000 --secret my-secret | tee relay.log
+```
+
+Inspect useful markers:
+
+```bash
+rg -n "protocolViolation|serverSequence|roomId|redact|token" relay.log server/relay -S
+```
+
+### Protocol mismatch
+
+- Look for `event:"protocolViolation"` with `code:426` and `category:"protocolError"`.
+- Inspect the nearest inbound `messageKind:"hello"` record to compare `protocolVersion` and `clientSequence`.
+
+### Sequence violations
+
+- Look for `event:"protocolViolation"` with `code:409` and sequence-related messages.
+- Correlate the offending inbound publish (`messageKind:"publishLinkEvent"`, `clientSequence`) with the latest outbound `serverSequence` values.
+
+### Room full / join rejected
+
+- Look for `event:"protocolViolation"` with `message` containing `room join denied` or `room create denied`.
+- `code:403` typically indicates full/denied; `code:404` indicates room not found.
+
+### Heartbeat timeouts
+
+- Look for `event:"protocolViolation"` with `category:"networkTimeout"` and `message:"heartbeat timeout"`.
+- Verify the latest heartbeat inbound record (`messageKind:"heartbeat"`) for that `roomId`/`playerId` and compare against timeout settings.
