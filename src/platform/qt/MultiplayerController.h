@@ -31,6 +31,7 @@ namespace Netplay {
 class DriverEventQueueBridge;
 class Session;
 enum class SessionState;
+enum class NetplayErrorCategory;
 struct SessionPeer;
 struct SessionProtocolError;
 struct SessionEventEnvelope;
@@ -122,8 +123,16 @@ private:
 	void onRemoteSessionProtocolError(const Netplay::SessionProtocolError& error);
 	void onRemoteSessionInboundLinkEvent(const Netplay::SessionEventEnvelope& event);
 	void refreshRemoteSessionBookkeepingFromSession();
+	void dispatchPendingRemoteRoomAction();
+	void emitControllerRemoteSessionError(int code, const QString& message, Netplay::NetplayErrorCategory category, const QString& action);
 	bool isRemoteNetDriverActive() const;
 	int parseRemotePlayerId(const QString& peerId) const;
+
+	enum class PendingRemoteRoomAction {
+		None,
+		CreateRoom,
+		JoinRoom,
+	};
 
 	union {
 		mLockstep m_lockstep;
@@ -146,6 +155,7 @@ private:
 	std::unique_ptr<Netplay::Session> m_remoteSession;
 	int m_remotePlayerCount = 0;
 	int m_remotePlayerId = -1;
+	PendingRemoteRoomAction m_pendingRemoteRoomAction = PendingRemoteRoomAction::None;
 	RemoteSessionConfig m_remoteSessionConfig;
 	std::unique_ptr<Netplay::DriverEventQueueBridge> m_remoteDriverBridge;
 };
