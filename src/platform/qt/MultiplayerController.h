@@ -33,12 +33,23 @@ struct SessionPeer;
 struct SessionProtocolError;
 }
 
+class ConfigController;
 class CoreController;
 
 class MultiplayerController : public QObject {
 Q_OBJECT
 
 public:
+	struct RemoteSessionConfig {
+		QString host;
+		quint16 port = 0;
+		QString room;
+		QString sharedSecret;
+
+		QString endpoint() const;
+		bool hasServerEndpoint() const;
+	};
+
 	MultiplayerController();
 	~MultiplayerController();
 
@@ -54,6 +65,12 @@ public:
 	bool isRemoteSessionActive() const;
 	int remotePlayerCount() const;
 	int remotePlayerId() const;
+
+	void loadRemoteSessionConfig(const ConfigController* config);
+	void saveRemoteSessionConfig(ConfigController* config) const;
+	const RemoteSessionConfig& remoteSessionConfig() const { return m_remoteSessionConfig; }
+	void setRemoteSessionConfig(RemoteSessionConfig config);
+	bool startConfiguredRemoteSession(std::unique_ptr<Netplay::Session> session, bool createRoom);
 
 signals:
 	void gameAttached();
@@ -121,6 +138,7 @@ private:
 	std::unique_ptr<Netplay::Session> m_remoteSession;
 	int m_remotePlayerCount = 0;
 	int m_remotePlayerId = -1;
+	RemoteSessionConfig m_remoteSessionConfig;
 };
 
 }

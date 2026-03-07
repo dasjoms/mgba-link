@@ -65,6 +65,10 @@ Q_OBJECT
 
 public:
 	constexpr static const char* const PORT = "qt";
+	constexpr static const char* const NETPLAY_SERVER_HOST_KEY = "netplay.serverHost";
+	constexpr static const char* const NETPLAY_SERVER_PORT_KEY = "netplay.serverPort";
+	constexpr static const char* const NETPLAY_ROOM_KEY = "netplay.room";
+	constexpr static const char* const NETPLAY_SHARED_SECRET_KEY = "netplay.sharedSecret";
 	static const int MRU_LIST_SIZE = 10;
 
 	enum class MRU {
