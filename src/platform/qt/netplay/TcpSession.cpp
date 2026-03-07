@@ -6,11 +6,10 @@
 
 #include "netplay/TcpSession.h"
 
+#include "netplay/NetplayCodec.h"
+
 #include <QDateTime>
 #include <QDebug>
-#include <QJsonDocument>
-#include <QJsonObject>
-#include <QJsonValue>
 
 namespace QGBA {
 namespace Netplay {
@@ -18,30 +17,6 @@ namespace Netplay {
 namespace {
 
 static const quint32 MAX_FRAME_SIZE = 8 * 1024 * 1024;
-
-static QString _stringValue(const QVariantMap& map, const QString& key) {
-	return map.value(key).toString();
-}
-
-static int _intValue(const QVariantMap& map, const QString& key, int fallback = 0) {
-	bool ok = false;
-	int value = map.value(key).toInt(&ok);
-	return ok ? value : fallback;
-}
-
-static qint64 _longValue(const QVariantMap& map, const QString& key, qint64 fallback = 0) {
-	bool ok = false;
-	qint64 value = map.value(key).toLongLong(&ok);
-	return ok ? value : fallback;
-}
-
-static QByteArray _byteArrayValue(const QVariantMap& map, const QString& key) {
-	QByteArray raw = map.value(key).toByteArray();
-	if (!raw.isEmpty()) {
-		return QByteArray::fromBase64(raw);
-	}
-	return QByteArray();
-}
 
 static DisconnectReason _disconnectReasonFromString(const QString& reason) {
 	if (reason == QStringLiteral("none")) {
@@ -330,12 +305,18 @@ bool TcpSession::_sendFrame(const QByteArray& payload) {
 bool TcpSession::_sendIntent(const QVariantMap& intent) {
 	QVariantMap wrappedIntent = intent;
 	wrappedIntent[QStringLiteral("clientSequence")] = m_nextSequence++;
-	QJsonDocument document = QJsonDocument::fromVariant(wrappedIntent);
-	if (!document.isObject()) {
-		_dispatchProtocolError(5, QStringLiteral("Intent encoding failed"), NetplayErrorCategory::MalformedMessage, m_nextSequence - 1);
+	CodecError codecError;
+	QByteArray encoded = encodeFrame(wrappedIntent, &codecError);
+	if (encoded.isEmpty()) {
+		_dispatchProtocolError(codecError.code ? codecError.code : 5,
+			codecError.message.isEmpty() ? QStringLiteral("Intent encoding failed") : codecError.message,
+			codecError.category,
+			m_nextSequence - 1,
+			-1,
+			codecError.details);
 		return false;
 	}
-	return _sendFrame(document.toJson(QJsonDocument::Compact));
+	return _sendFrame(encoded);
 }
 
 void TcpSession::_drainFrames() {
@@ -366,32 +347,36 @@ void TcpSession::_drainFrames() {
 }
 
 void TcpSession::_handleFrame(const QByteArray& payload) {
-	QJsonParseError parseError;
-	QJsonDocument document = QJsonDocument::fromJson(payload, &parseError);
-	if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
-		_dispatchProtocolError(7, QStringLiteral("Invalid JSON frame"), NetplayErrorCategory::MalformedMessage);
+	DecodedMessage decoded = decodeFrame(payload);
+	if (!decoded.isValid()) {
+		_dispatchProtocolError(decoded.error.code ? decoded.error.code : 7,
+			decoded.error.message.isEmpty() ? QStringLiteral("Invalid JSON frame") : decoded.error.message,
+			decoded.error.category,
+			-1,
+			-1,
+			decoded.error.details);
 		return;
 	}
 
-	QVariantMap event = document.object().toVariantMap();
-	QString kind = _stringValue(event, QStringLiteral("kind"));
+	QVariantMap event = decoded.payload;
+	QString kind = decoded.kind;
 	if (kind == QStringLiteral("roomJoined")) {
-		m_room.roomId = _stringValue(event, QStringLiteral("roomId"));
-		m_room.roomName = _stringValue(event, QStringLiteral("roomName"));
-		m_room.maxPeers = _intValue(event, QStringLiteral("maxPlayers"));
+		m_room.roomId = event.value(QStringLiteral("roomId")).toString();
+		m_room.roomName = event.value(QStringLiteral("roomName")).toString();
+		m_room.maxPeers = event.value(QStringLiteral("maxPlayers")).toInt();
 		_setState(SessionState::InRoom);
 		return;
 	}
 	if (kind == QStringLiteral("playerAssigned")) {
-		m_localPeer.peerId = QString::number(_intValue(event, QStringLiteral("playerId"), -1));
-		m_localPeer.displayName = _stringValue(event, QStringLiteral("displayName"));
+		m_localPeer.peerId = QString::number(event.value(QStringLiteral("playerId")).toInt());
+		m_localPeer.displayName = event.value(QStringLiteral("displayName")).toString();
 		m_localPeer.isLocal = true;
 		return;
 	}
 	if (kind == QStringLiteral("peerJoined")) {
 		SessionPeer peer;
-		peer.peerId = QString::number(_intValue(event, QStringLiteral("playerId"), -1));
-		peer.displayName = _stringValue(event, QStringLiteral("displayName"));
+		peer.peerId = QString::number(event.value(QStringLiteral("playerId")).toInt());
+		peer.displayName = event.value(QStringLiteral("displayName")).toString();
 		if (m_callbacks.onPeerJoined) {
 			m_callbacks.onPeerJoined(peer);
 		}
@@ -399,8 +384,8 @@ void TcpSession::_handleFrame(const QByteArray& payload) {
 	}
 	if (kind == QStringLiteral("peerLeft")) {
 		SessionPeer peer;
-		peer.peerId = QString::number(_intValue(event, QStringLiteral("playerId"), -1));
-		peer.displayName = _stringValue(event, QStringLiteral("displayName"));
+		peer.peerId = QString::number(event.value(QStringLiteral("playerId")).toInt());
+		peer.displayName = event.value(QStringLiteral("displayName")).toString();
 		if (m_callbacks.onPeerLeft) {
 			m_callbacks.onPeerLeft(peer);
 		}
@@ -408,12 +393,12 @@ void TcpSession::_handleFrame(const QByteArray& payload) {
 	}
 	if (kind == QStringLiteral("inboundLinkEvent")) {
 		SessionEventEnvelope envelope;
-		envelope.eventId = _stringValue(event, QStringLiteral("eventId"));
-		envelope.sourcePeerId = _stringValue(event, QStringLiteral("sourcePeerId"));
-		envelope.sequence = _longValue(event, QStringLiteral("sequence"));
-		envelope.type = static_cast<SessionEventType>(_intValue(event, QStringLiteral("type"), static_cast<int>(SessionEventType::Custom)));
-		envelope.payload = _byteArrayValue(event, QStringLiteral("payload"));
-		envelope.sentAtUtc = QDateTime::fromMSecsSinceEpoch(_longValue(event, QStringLiteral("sentAtUtcMs")), Qt::UTC);
+		envelope.eventId = event.value(QStringLiteral("eventId")).toString();
+		envelope.sourcePeerId = event.value(QStringLiteral("sourcePeerId")).toString();
+		envelope.sequence = event.value(QStringLiteral("sequence")).toLongLong();
+		envelope.type = static_cast<SessionEventType>(event.value(QStringLiteral("type")).toInt());
+		envelope.payload = event.value(QStringLiteral("payload")).toByteArray();
+		envelope.sentAtUtc = QDateTime::fromMSecsSinceEpoch(event.value(QStringLiteral("sentAtUtcMs")).toLongLong(), Qt::UTC);
 		envelope.metadata = event.value(QStringLiteral("metadata")).toMap();
 		if (m_callbacks.onInboundLinkEvent) {
 			m_callbacks.onInboundLinkEvent(envelope);
@@ -425,8 +410,8 @@ void TcpSession::_handleFrame(const QByteArray& payload) {
 		return;
 	}
 	if (kind == QStringLiteral("error")) {
-		const int code = _intValue(event, QStringLiteral("code"));
-		const QString message = _stringValue(event, QStringLiteral("message"));
+		const int code = event.value(QStringLiteral("code")).toInt();
+		const QString message = event.value(QStringLiteral("message")).toString();
 		const QString lowerMessage = message.toLower();
 		NetplayErrorCategory category = NetplayErrorCategory::ProtocolMismatch;
 		if (code == 403 || code == 409 || code == 429
@@ -435,20 +420,20 @@ void TcpSession::_handleFrame(const QByteArray& payload) {
 				|| lowerMessage.contains(QStringLiteral("denied"))) {
 			category = NetplayErrorCategory::RoomRejectedOrFull;
 		}
-		_dispatchProtocolError(code, message, category, _longValue(event, QStringLiteral("sequence")), -1, event);
+		_dispatchProtocolError(code, message, category, event.value(QStringLiteral("sequence")).toLongLong(), -1, event);
 		_setState(SessionState::Error);
 		return;
 	}
 	if (kind == QStringLiteral("disconnected")) {
 		QVariantMap details = event;
 		details[QStringLiteral("reason")]
-			= static_cast<int>(_disconnectReasonFromString(_stringValue(event, QStringLiteral("reason"))));
-		_dispatchProtocolError(8, _stringValue(event, QStringLiteral("message")), NetplayErrorCategory::ConnectionFailure, -1, -1, details);
+			= static_cast<int>(_disconnectReasonFromString(event.value(QStringLiteral("reason")).toString()));
+		_dispatchProtocolError(8, event.value(QStringLiteral("message")).toString(), NetplayErrorCategory::ConnectionFailure, -1, -1, details);
 		disconnect();
 		return;
 	}
 
-	_dispatchProtocolError(9, QStringLiteral("Unknown server event kind"), NetplayErrorCategory::ProtocolMismatch, _longValue(event, QStringLiteral("sequence")), -1, event);
+	_dispatchProtocolError(9, QStringLiteral("Unknown server event kind"), NetplayErrorCategory::ProtocolMismatch, event.value(QStringLiteral("sequence")).toLongLong(), -1, event);
 }
 
 void TcpSession::_dispatchProtocolError(int code, const QString& message, NetplayErrorCategory category, qint64 sequence, qint64 expectedSequence, const QVariantMap& details) {

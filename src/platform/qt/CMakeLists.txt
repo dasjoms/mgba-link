@@ -152,6 +152,7 @@ set(SOURCE_FILES
 	MessagePainter.cpp
 	MultiplayerController.cpp
 	netplay/SessionMessageAdapter.cpp
+	netplay/NetplayCodec.cpp
 	netplay/TcpSession.cpp
 	ObjView.cpp
 	OpenGLBug.cpp
