@@ -155,6 +155,10 @@ ConfigController::ConfigController(QObject* parent)
 	mCoreConfigSetDefaultIntValue(&m_config, "gb.colors", GB_COLORS_CGB);
 #endif
 	mCoreConfigSetDefaultIntValue(&m_config, "preload", true);
+	mCoreConfigSetDefaultValue(&m_config, ConfigController::NETPLAY_SERVER_HOST_KEY, "127.0.0.1");
+	mCoreConfigSetDefaultUIntValue(&m_config, ConfigController::NETPLAY_SERVER_PORT_KEY, 5000);
+	mCoreConfigSetDefaultValue(&m_config, ConfigController::NETPLAY_ROOM_KEY, "");
+	mCoreConfigSetDefaultValue(&m_config, ConfigController::NETPLAY_SHARED_SECRET_KEY, "");
 	mCoreConfigMap(&m_config, &m_opts);
 
 	mSubParserGraphicsInit(&m_subparsers[0], &m_graphicsOpts);

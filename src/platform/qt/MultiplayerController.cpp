@@ -5,6 +5,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 #include "MultiplayerController.h"
 
+#include "ConfigController.h"
 #include "CoreController.h"
 #include "LogController.h"
 #include "utils.h"
@@ -20,6 +21,17 @@
 #include <algorithm>
 
 using namespace QGBA;
+
+QString MultiplayerController::RemoteSessionConfig::endpoint() const {
+	if (!hasServerEndpoint()) {
+		return {};
+	}
+	return QStringLiteral("tcp://%1:%2").arg(host.trimmed()).arg(port);
+}
+
+bool MultiplayerController::RemoteSessionConfig::hasServerEndpoint() const {
+	return !host.trimmed().isEmpty() && port > 0;
+}
 
 MultiplayerController::Player::Player(CoreController* coreController)
 	: controller(coreController)
@@ -336,6 +348,65 @@ int MultiplayerController::remotePlayerCount() const {
 
 int MultiplayerController::remotePlayerId() const {
 	return m_remotePlayerId;
+}
+
+void MultiplayerController::loadRemoteSessionConfig(const ConfigController* config) {
+	if (!config) {
+		return;
+	}
+
+	RemoteSessionConfig loaded;
+	loaded.host = config->getOption(ConfigController::NETPLAY_SERVER_HOST_KEY, QStringLiteral("127.0.0.1"));
+	bool ok = false;
+	const int portValue = config->getOption(ConfigController::NETPLAY_SERVER_PORT_KEY, 5000).toInt(&ok);
+	if (ok && portValue > 0 && portValue <= 65535) {
+		loaded.port = static_cast<quint16>(portValue);
+	}
+	loaded.room = config->getOption(ConfigController::NETPLAY_ROOM_KEY);
+	loaded.sharedSecret = config->getOption(ConfigController::NETPLAY_SHARED_SECRET_KEY);
+	setRemoteSessionConfig(std::move(loaded));
+}
+
+void MultiplayerController::saveRemoteSessionConfig(ConfigController* config) const {
+	if (!config) {
+		return;
+	}
+
+	config->setOption(ConfigController::NETPLAY_SERVER_HOST_KEY, m_remoteSessionConfig.host);
+	config->setOption(ConfigController::NETPLAY_SERVER_PORT_KEY, static_cast<unsigned>(m_remoteSessionConfig.port));
+	config->setOption(ConfigController::NETPLAY_ROOM_KEY, m_remoteSessionConfig.room);
+	config->setOption(ConfigController::NETPLAY_SHARED_SECRET_KEY, m_remoteSessionConfig.sharedSecret);
+}
+
+void MultiplayerController::setRemoteSessionConfig(RemoteSessionConfig config) {
+	config.host = config.host.trimmed();
+	config.room = config.room.trimmed();
+	m_remoteSessionConfig = std::move(config);
+}
+
+bool MultiplayerController::startConfiguredRemoteSession(std::unique_ptr<Netplay::Session> session, bool createRoom) {
+	if (!session || !m_remoteSessionConfig.hasServerEndpoint()) {
+		return false;
+	}
+
+	if (!startRemoteSession(std::move(session))) {
+		return false;
+	}
+
+	Netplay::SessionConnectRequest connectRequest;
+	connectRequest.endpoint = m_remoteSessionConfig.endpoint();
+	connectRequest.authToken = m_remoteSessionConfig.sharedSecret;
+	connectRequest.options[QStringLiteral("host")] = m_remoteSessionConfig.host;
+	connectRequest.options[QStringLiteral("port")] = m_remoteSessionConfig.port;
+	connectRequest.options[QStringLiteral("room")] = m_remoteSessionConfig.room;
+	connectRequest.options[QStringLiteral("roomMode")] = createRoom ? QStringLiteral("create") : QStringLiteral("join");
+
+	if (!m_remoteSession->connect(connectRequest)) {
+		stopRemoteSession();
+		return false;
+	}
+
+	return true;
 }
 
 void MultiplayerController::onRemoteSessionStateChanged(Netplay::SessionState state) {

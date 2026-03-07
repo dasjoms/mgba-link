@@ -308,6 +308,10 @@ void CoreController::loadConfig(ConfigController* config) {
 	mCoreConfigCopyValue(&m_threadContext.core->config, config->config(), "mute");
 	m_preload = config->getOption("preload", true).toInt();
 
+	if (m_multiplayer) {
+		m_multiplayer->loadRemoteSessionConfig(config);
+	}
+
 	QSize sizeBefore = screenDimensions();
 	m_activeBuffer.resize(256 * 224 * sizeof(mColor));
 	m_threadContext.core->setVideoBuffer(m_threadContext.core, reinterpret_cast<mColor*>(m_activeBuffer.data()), sizeBefore.width());
