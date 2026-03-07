@@ -53,3 +53,9 @@ Define a minimal, shippable networked link design that reuses existing mGBA link
 
 ## Validation and operational guidance
 - Validation scenarios and pass/fail recording template: `docs/netplay/validation-v1.md`.
+
+
+## Quickstart (Qt + relay)
+- Start the relay with `--port 41000` (or leave default `RELAY_PORT=41000`).
+- In Qt netplay room create/join dialogs, first-run default relay port is also `41000`.
+- Keep relay and client port aligned if you override either side.

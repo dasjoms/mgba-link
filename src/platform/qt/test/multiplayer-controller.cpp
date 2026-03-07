@@ -10,6 +10,7 @@
 #include "platform/qt/Log.h"
 #include "platform/qt/netplay/DriverEventQueueBridge.h"
 #include "platform/qt/netplay/Session.h"
+#include "platform/qt/netplay/SessionConstants.h"
 
 #include <QTest>
 
@@ -133,13 +134,22 @@ private:
 	MultiplayerController::RemoteSessionConfig config() const {
 		MultiplayerController::RemoteSessionConfig cfg;
 		cfg.host = QStringLiteral("127.0.0.1");
-		cfg.port = 5000;
+		cfg.port = DEFAULT_RELAY_PORT;
 		cfg.room = QStringLiteral("room-1");
 		cfg.sharedSecret = QStringLiteral("secret");
 		return cfg;
 	}
 
 private slots:
+
+	void loadRemoteSessionConfigUsesCanonicalDefaultPort() {
+		MultiplayerController controller;
+		ConfigController config;
+
+		controller.loadRemoteSessionConfig(&config);
+
+		QCOMPARE(controller.remoteSessionConfig().port, static_cast<quint16>(DEFAULT_RELAY_PORT));
+	}
 	void createRoomHappyPath() {
 		MultiplayerController controller;
 		controller.setRemoteSessionConfig(config());
