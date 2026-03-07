@@ -77,3 +77,31 @@ func TestProtocolVersionMismatchDeterministicAcrossIntents(t *testing.T) {
 		}
 	}
 }
+
+func TestClientSequenceValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload string
+	}{
+		{
+			name:    "non-numeric",
+			payload: `{"intent":"heartbeat","protocolVersion":1,"clientSequence":"abc","heartbeatCounter":1}`,
+		},
+		{
+			name:    "negative",
+			payload: `{"intent":"heartbeat","protocolVersion":1,"clientSequence":-1,"heartbeatCounter":1}`,
+		},
+		{
+			name:    "fractional",
+			payload: `{"intent":"heartbeat","protocolVersion":1,"clientSequence":1.5,"heartbeatCounter":1}`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, violation := ParseAndValidateClientIntent([]byte(tc.payload)); violation == nil || violation.Code != 400 {
+				t.Fatalf("expected 400 violation for %s, got %#v", tc.name, violation)
+			}
+		})
+	}
+}
