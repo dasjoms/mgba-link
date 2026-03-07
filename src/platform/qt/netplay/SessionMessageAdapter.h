@@ -18,6 +18,14 @@ namespace Netplay {
 
 class SessionMessageAdapter {
 public:
+	// Wire event kind -> adapter callback mapping:
+	// - roomJoined -> handleServerEvent(const ServerRoomJoinedEvent&)
+	// - playerAssigned -> handleServerEvent(const ServerPlayerAssignedEvent&)
+	// - peerJoined -> handleServerEvent(const ServerPeerJoinedEvent&)
+	// - peerLeft -> handleServerEvent(const ServerPeerLeftEvent&)
+	// - inboundLinkEvent -> handleServerEvent(const ServerInboundLinkEvent&)
+	// - disconnected -> handleServerEvent(const ServerDisconnectedEvent&)
+	// - error -> handleServerEvent(const ServerErrorEvent&)
 	struct ControllerCallbacks {
 		std::function<void(const ServerRoomJoinedEvent&)> onRoomJoined;
 		std::function<void(const ServerPlayerAssignedEvent&)> onPlayerAssigned;
@@ -48,6 +56,7 @@ public:
 	int localPlayerId() const;
 
 private:
+	bool _validateRoomScope(const QString& roomId, int code, const QString& message, const QVariantMap& details = QVariantMap()) const;
 	void _reportProtocolError(int code, const QString& message, NetplayErrorCategory category, qint64 sequence = -1, qint64 expectedSequence = -1, const QVariantMap& details = QVariantMap()) const;
 	void _resetRoomState();
 
