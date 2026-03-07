@@ -92,7 +92,7 @@ cmake -S . -B build -DBUILD_QT=ON -DBUILD_SDL=OFF -DBUILD_SUITE=ON -DSKIP_GIT=ON
 # 3) Full compile (validates Qt + GBA integration)
 cmake --build build -j"$(nproc)"
 
-# 4) Run tests
+# 4) Run tests (Execute the fix as instructed in the above section about the 'ctest --test-dir build --output-on-failure' command before running it to ensure tests are found)
 ctest --test-dir build --output-on-failure
 ```
 
