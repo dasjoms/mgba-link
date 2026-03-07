@@ -1,7 +1,6 @@
 package transport
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -22,11 +21,7 @@ type Server struct {
 }
 
 func NewServer(cfg *config.Config, logger *log.Logger) *Server {
-	return &Server{
-		cfg:   cfg,
-		log:   logger,
-		rooms: rooms.NewManager(cfg.MaxRooms, cfg.MaxPlayersPerRoom),
-	}
+	return &Server{cfg: cfg, log: logger, rooms: rooms.NewManager(cfg.MaxRooms, cfg.MaxPlayersPerRoom)}
 }
 
 func (s *Server) ListenAndServe() error {
@@ -45,6 +40,26 @@ func (s *Server) ListenAndServe() error {
 	}
 }
 
+func writeEvent(conn net.Conn, kind string, fields map[string]any) error {
+	payload, err := protocol.MarshalEvent(kind, fields)
+	if err != nil {
+		return err
+	}
+	return protocol.WriteFrame(conn, payload)
+}
+
+func (s *Server) writeProtocolViolationAndDisconnect(conn net.Conn, v *protocol.ProtocolViolation) {
+	if v == nil {
+		return
+	}
+	_ = writeEvent(conn, "error", map[string]any{"code": v.Code, "message": v.Message})
+	reason := v.Reason
+	if reason == "" {
+		reason = "protocolError"
+	}
+	_ = writeEvent(conn, "disconnected", map[string]any{"reason": reason, "message": v.Message})
+}
+
 func (s *Server) handleConn(conn net.Conn) {
 	id := atomic.AddUint64(&s.nextConnID, 1)
 	sessionID := fmt.Sprintf("c-%d", id)
@@ -55,7 +70,6 @@ func (s *Server) handleConn(conn net.Conn) {
 		_ = conn.Close()
 	}()
 
-	reader := bufio.NewReaderSize(conn, s.cfg.ClientReadBufSize)
 	session := &rooms.Session{ID: sessionID, Send: make(chan []byte, 32)}
 	roomID := ""
 	defer close(session.Send)
@@ -67,65 +81,86 @@ func (s *Server) handleConn(conn net.Conn) {
 
 	heartbeatTicker := time.NewTicker(s.cfg.HeartbeatInterval)
 	defer heartbeatTicker.Stop()
-	lastPong := time.Now()
+	lastHeartbeat := time.Now()
 
 	go func() {
 		for b := range session.Send {
 			_ = conn.SetWriteDeadline(time.Now().Add(s.cfg.ClientWriteTimeout))
-			_, _ = conn.Write(b)
+			_ = protocol.WriteFrame(conn, b)
 		}
 	}()
 
 	for {
 		_ = conn.SetReadDeadline(time.Now().Add(s.cfg.HeartbeatTimeout))
-		msg, err := protocol.ReadMessage(reader)
+		payload, err := protocol.ReadFrame(conn)
 		if err != nil {
+			if v, ok := err.(*protocol.ProtocolViolation); ok {
+				s.writeProtocolViolationAndDisconnect(conn, v)
+			}
 			return
 		}
 
-		switch msg.Type {
-		case "join":
-			if s.cfg.Secret != "" && msg.Secret != s.cfg.Secret {
-				_ = protocol.WriteJSONLine(conn, map[string]any{"type": "error", "error": "unauthorized"})
+		intent, violation := protocol.ParseAndValidateClientIntent(payload)
+		if violation != nil {
+			s.writeProtocolViolationAndDisconnect(conn, violation)
+			return
+		}
+
+		switch intent.Intent {
+		case "hello":
+			if s.cfg.Secret != "" && intent.AuthToken != s.cfg.Secret {
+				s.writeProtocolViolationAndDisconnect(conn, &protocol.ProtocolViolation{Code: 401, Message: "unauthorized", Reason: "protocolError"})
 				return
 			}
-			session.Player = msg.Player
-			if err := s.rooms.Join(msg.RoomID, session); err != nil {
-				_ = protocol.WriteJSONLine(conn, map[string]any{"type": "error", "error": err.Error()})
+			_ = writeEvent(conn, "playerAssigned", map[string]any{"playerId": 1, "displayName": session.ID, "roomId": roomID})
+		case "createRoom":
+			session.Player = session.ID
+			if err := s.rooms.Join(intent.RoomName, session); err != nil {
+				s.writeProtocolViolationAndDisconnect(conn, &protocol.ProtocolViolation{Code: 403, Message: err.Error(), Reason: "protocolError"})
 				return
 			}
-			roomID = msg.RoomID
-			_ = protocol.WriteJSONLine(conn, map[string]any{"type": "joined", "roomId": roomID, "session": session.ID})
-		case "leave":
+			roomID = intent.RoomName
+			_ = writeEvent(conn, "roomJoined", map[string]any{"roomId": roomID, "roomName": intent.RoomName, "maxPlayers": intent.MaxPlayers})
+		case "joinRoom":
+			session.Player = session.ID
+			if err := s.rooms.Join(intent.RoomID, session); err != nil {
+				s.writeProtocolViolationAndDisconnect(conn, &protocol.ProtocolViolation{Code: 403, Message: err.Error(), Reason: "protocolError"})
+				return
+			}
+			roomID = intent.RoomID
+			_ = writeEvent(conn, "roomJoined", map[string]any{"roomId": roomID, "roomName": roomID, "maxPlayers": s.cfg.MaxPlayersPerRoom})
+		case "leaveRoom":
 			if roomID != "" {
 				s.rooms.Leave(roomID, session.ID)
 			}
+			_ = writeEvent(conn, "disconnected", map[string]any{"reason": "clientRequested", "message": "left room"})
 			return
-		case "pong":
-			lastPong = time.Now()
-		case "message":
+		case "heartbeat":
+			lastHeartbeat = time.Now()
+			_ = writeEvent(conn, "heartbeatAck", map[string]any{"heartbeatCounter": intent.Heartbeat, "roomId": roomID})
+		case "publishLinkEvent":
 			if roomID == "" {
-				_ = protocol.WriteJSONLine(conn, map[string]any{"type": "error", "error": "must join room first"})
-				continue
+				s.writeProtocolViolationAndDisconnect(conn, &protocol.ProtocolViolation{Code: 403, Message: "must join room first", Reason: "protocolError"})
+				return
 			}
-			env := protocol.Envelope{From: session.Player, Type: "message", Payload: msg.Payload}
-			payload, _ := json.Marshal(env)
-			payload = append(payload, '\n')
-			s.rooms.Broadcast(roomID, session.ID, payload)
+			var event map[string]any
+			_ = json.Unmarshal(intent.Event, &event)
+			out, _ := protocol.MarshalEvent("inboundLinkEvent", map[string]any{"roomId": roomID, "event": event})
+			s.rooms.Broadcast(roomID, session.ID, out)
 		default:
-			_ = protocol.WriteJSONLine(conn, map[string]any{"type": "error", "error": "unknown message type"})
+			s.writeProtocolViolationAndDisconnect(conn, &protocol.ProtocolViolation{Code: 400, Message: "unknown intent", Reason: "protocolError"})
+			return
 		}
 
 		select {
 		case <-heartbeatTicker.C:
-			if time.Since(lastPong) > s.cfg.HeartbeatTimeout {
-				_ = protocol.WriteJSONLine(conn, map[string]any{"type": "error", "error": "heartbeat timeout"})
+			if time.Since(lastHeartbeat) > s.cfg.HeartbeatTimeout {
+				s.writeProtocolViolationAndDisconnect(conn, &protocol.ProtocolViolation{Code: 400, Message: "heartbeat timeout", Reason: "networkTimeout"})
 				if roomID != "" {
 					s.rooms.Leave(roomID, session.ID)
 				}
 				return
 			}
-			_ = protocol.WriteJSONLine(conn, map[string]any{"type": "ping", "ts": time.Now().UnixNano()})
 		default:
 		}
 	}
