@@ -114,19 +114,36 @@ func (m *Manager) Join(roomID string, s *Session) (int, int, error) {
 }
 
 func (m *Manager) Leave(roomID, sessionID string) {
+	m.LeaveWithParticipants(roomID, sessionID)
+}
+
+func (m *Manager) LeaveWithParticipants(roomID, sessionID string) (int, []*Session) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	room, ok := m.rooms[roomID]
 	if !ok {
-		return
+		return 0, nil
 	}
+	leftPlayerID := room.PlayerIDs[sessionID]
 	delete(room.Sessions, sessionID)
 	delete(room.PlayerIDs, sessionID)
 	delete(room.LastSenderSequences, sessionID)
+	participants := make([]*Session, 0, len(room.Sessions))
+	keys := make([]string, 0, len(room.Sessions))
+	for id := range room.Sessions {
+		keys = append(keys, id)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		return room.PlayerIDs[keys[i]] < room.PlayerIDs[keys[j]]
+	})
+	for _, id := range keys {
+		participants = append(participants, room.Sessions[id])
+	}
 	if len(room.Sessions) == 0 {
 		delete(m.rooms, roomID)
 	}
+	return leftPlayerID, participants
 }
 
 func (m *Manager) ReservePublish(roomID, senderID string, senderSequence int64) (int64, int, []*Session, error) {
