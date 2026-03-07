@@ -160,7 +160,7 @@ static bool _decodeTransferResult(struct GBASIONetDriver* net, const struct GBAS
 }
 
 static void _pollInboundControlEvents(struct GBASIONetDriver* net) {
-	if (!net->inboundQueue) {
+	if (!net->inboundQueue || net->transferArmed) {
 		return;
 	}
 
@@ -168,10 +168,13 @@ static void _pollInboundControlEvents(struct GBASIONetDriver* net) {
 	while (GBASIONetEventQueueTryPop(net->inboundQueue, &event)) {
 		if (event.type == GBA_SIO_NET_EV_SESSION_FAILURE) {
 			_applySessionFailure(net, &event);
-			continue;
+			return;
 		}
 		if (_isTopologyEvent(&event)) {
 			_applyTopologyEvent(net, &event);
+			if (net->sessionDisconnected || net->protocolError) {
+				return;
+			}
 			continue;
 		}
 
@@ -192,10 +195,13 @@ static bool _pollInboundForCurrentTransfer(struct GBASIONetDriver* net) {
 	while (GBASIONetEventQueueTryPop(net->inboundQueue, &event)) {
 		if (event.type == GBA_SIO_NET_EV_SESSION_FAILURE) {
 			_applySessionFailure(net, &event);
-			continue;
+			return false;
 		}
 		if (_isTopologyEvent(&event)) {
 			_applyTopologyEvent(net, &event);
+			if (net->sessionDisconnected || net->protocolError) {
+				return false;
+			}
 			continue;
 		}
 		if (event.type != GBA_SIO_NET_EV_TRANSFER_RESULT) {
@@ -450,10 +456,7 @@ static bool _applyTopologyEvent(struct GBASIONetDriver* net, const struct GBASIO
 	}
 
 	uint8_t bit = (uint8_t) (1U << playerId);
-	if (net->transferArmed) {
-		_setProtocolError(net, "peer topology changed during active transfer");
-		return false;
-	}
+	bool transferActive = net->state == GBA_SIO_NET_ACTIVE_TRANSFER;
 	if (event->type == GBA_SIO_NET_EV_PEER_ATTACH) {
 		net->attachedPlayerMask |= bit;
 	} else {
@@ -470,6 +473,10 @@ static bool _applyTopologyEvent(struct GBASIONetDriver* net, const struct GBASIO
 	}
 	if (net->roomPlayerCount > MAX_GBAS) {
 		net->roomPlayerCount = MAX_GBAS;
+	}
+	if (transferActive) {
+		_setProtocolError(net, "peer topology changed during active transfer");
+		return false;
 	}
 	if (net->state >= GBA_SIO_NET_IN_ROOM && !net->protocolError) {
 		net->state = GBA_SIO_NET_IN_ROOM;

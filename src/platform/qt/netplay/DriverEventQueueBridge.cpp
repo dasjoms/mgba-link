@@ -102,6 +102,13 @@ bool DriverEventQueueBridge::tryPop(GBASIONetEvent* outEvent) {
 		return false;
 	}
 	*outEvent = m_items.front().event;
+	if (outEvent->type == GBA_SIO_NET_EV_TRANSFER_RESULT && outEvent->transferResult.payload && outEvent->transferResult.payloadSize > 0) {
+		m_lastPoppedPayload.assign(outEvent->transferResult.payload, outEvent->transferResult.payload + outEvent->transferResult.payloadSize);
+		outEvent->transferResult.payload = m_lastPoppedPayload.data();
+		outEvent->transferResult.payloadSize = m_lastPoppedPayload.size();
+	} else {
+		m_lastPoppedPayload.clear();
+	}
 	m_items.pop_front();
 	return true;
 }
