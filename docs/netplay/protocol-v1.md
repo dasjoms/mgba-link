@@ -120,7 +120,8 @@ These examples are payload JSON carried inside the length-prefixed frame.
 ```json
 {
   "kind": "playerAssigned",
-  "playerId": 2,
+  "playerId": 0,
+  "roomId": "",
   "displayName": "Player 3",
   "protocolVersion": 1
 }
@@ -187,6 +188,19 @@ Interpretation tips:
 - Compare `direction=out` `sequence` to matching server-side receipt logs to detect dropped or rejected intents.
 - Treat any token/auth/secret fields in `details` as redacted (`<redacted>`) by design when correlating auth failures.
 
+## 10) Canonical room and player identifier rules
+
+- `roomId` is authoritative from the relay. Clients MUST treat the `roomId` in `roomJoined` and `playerAssigned` as canonical for all future intents.
+- For `createRoom`, `roomName` is optional:
+  - omitted/empty -> relay generates a short room code,
+  - provided -> relay validates and canonicalizes it.
+- Canonical room ID format used by relay: uppercase, 1-32 chars, charset `[A-Z0-9_-]`.
+- `playerId` values are relay-assigned and stable for the lifetime of that session in a room.
+- Reserved `playerId` ranges:
+  - `0` only before room membership is established,
+  - `1..4` for active room participants.
+- For `publishLinkEvent.event.senderPlayerId`, clients SHOULD send their assigned `playerId`; relay rejects mismatches.
+
 ## Appendix A) Server implementation contract (client-internals independent)
 
 This appendix defines the minimum server-side behavior for v1 so a relay can be implemented without reading Qt client source.
@@ -220,7 +234,7 @@ Message routing and responsibilities are defined by top-level discriminator:
    - If server policy closes idle rooms, close room and emit `disconnected`/room closure notices as needed.
 
 4. `publishLinkEvent`
-   - Validate envelope fields (`sequence`, `senderPlayerId`, payload presence/type).
+   - Validate envelope fields (`sequence`, `senderPlayerId`, payload presence/type) and require `senderPlayerId` to match assigned room identity (or `0` for legacy unset clients).
    - Enforce per-sender monotonic `LinkEventEnvelope.sequence`.
    - Assign canonical room-wide `serverSequence` (see A.2).
    - Rebroadcast to all intended recipients in canonical order.
@@ -349,7 +363,7 @@ Illustrative sequence (JSON payloads only; each payload is carried in framed tra
 {
   "intent": "joinRoom",
   "clientSequence": 1,
-  "roomId": "room-42"
+  "roomId": "ROOM-42"
 }
 ```
 
@@ -358,7 +372,7 @@ Illustrative sequence (JSON payloads only; each payload is carried in framed tra
 ```json
 {
   "kind": "roomJoined",
-  "roomId": "room-42",
+  "roomId": "ROOM-42",
   "memberCount": 2
 }
 ```
@@ -368,8 +382,8 @@ Illustrative sequence (JSON payloads only; each payload is carried in framed tra
 ```json
 {
   "kind": "peerJoined",
-  "roomId": "room-42",
-  "playerId": 7,
+  "roomId": "ROOM-42",
+  "playerId": 3,
   "displayName": "Player 8"
 }
 ```
@@ -394,7 +408,7 @@ Illustrative sequence (JSON payloads only; each payload is carried in framed tra
 ```json
 {
   "kind": "inboundLinkEvent",
-  "roomId": "room-42",
+  "roomId": "ROOM-42",
   "serverSequence": 98,
   "event": {
     "sequence": 15,

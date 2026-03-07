@@ -50,6 +50,14 @@ Transport uses 4-byte big-endian length-prefixed framing, followed by UTF-8 JSON
 
 - Client -> server uses top-level discriminator `intent` (`hello`, `createRoom`, `joinRoom`, `leaveRoom`, `heartbeat`, `publishLinkEvent`).
 - Server -> client uses top-level discriminator `kind` (`playerAssigned`, `roomJoined`, `inboundLinkEvent`, `heartbeatAck`, `error`, `disconnected`).
+- `roomId` is authoritative from relay responses (`playerAssigned`/`roomJoined`) and must be reused by clients for future join/leave/publish intents.
+- `createRoom` semantics:
+  - if `roomName` is omitted/empty, relay generates a short canonical room code,
+  - if `roomName` is provided, relay validates and canonicalizes it to uppercase `[A-Z0-9_-]`.
+- `playerId` semantics:
+  - `0` means not yet joined to a room,
+  - active room participants are assigned stable IDs in range `1..4` for the lifetime of their room session,
+  - `publishLinkEvent.event.senderPlayerId` must match the assigned `playerId` (or be `0` for legacy unset clients).
 - Hard protocol violations emit `error` and then `disconnected` before socket close.
 
 

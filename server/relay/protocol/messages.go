@@ -134,8 +134,12 @@ func ParseAndValidateClientIntent(payload []byte) (*ClientIntent, *ProtocolViola
 		if err := requireSupportedProtocolIfPresent(); err != nil {
 			return nil, err
 		}
-		if err := requireString("roomName", decoded.RoomName); err != nil {
-			return nil, err
+		if raw, ok := root["roomName"]; ok {
+			var roomName string
+			if err := json.Unmarshal(raw, &roomName); err != nil {
+				return nil, &ProtocolViolation{Code: 400, Message: "roomName must be a string", Reason: "protocolError"}
+			}
+			decoded.RoomName = roomName
 		}
 		if _, ok := root["maxPlayers"]; !ok || decoded.MaxPlayers < 2 || decoded.MaxPlayers > 4 {
 			return nil, &ProtocolViolation{Code: 400, Message: "missing or invalid required field: maxPlayers (must be 2-4)", Reason: "protocolError"}
@@ -171,6 +175,12 @@ func ParseAndValidateClientIntent(payload []byte) (*ClientIntent, *ProtocolViola
 		}
 		if err := json.Unmarshal(decoded.Event, &evt); err != nil {
 			return nil, &ProtocolViolation{Code: 400, Message: "invalid event payload", Reason: "protocolError"}
+		}
+		if evt.Sequence < 0 {
+			return nil, &ProtocolViolation{Code: 400, Message: "event.sequence must be a non-negative integer", Reason: "protocolError"}
+		}
+		if evt.SenderPlayerID < 0 || evt.SenderPlayerID > 4 {
+			return nil, &ProtocolViolation{Code: 400, Message: "event.senderPlayerId must be an integer in range 0-4", Reason: "protocolError"}
 		}
 		if evt.Payload == "" {
 			return nil, &ProtocolViolation{Code: 400, Message: "missing required field: event.payload", Reason: "protocolError"}

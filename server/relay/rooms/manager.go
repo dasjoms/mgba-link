@@ -1,9 +1,13 @@
 package rooms
 
 import (
+	"crypto/rand"
 	"errors"
+	"fmt"
 	"sort"
+	"strings"
 	"sync"
+	"unicode"
 )
 
 var (
@@ -15,6 +19,16 @@ var (
 	ErrInvalidRoomCapacity    = errors.New("room capacity must be between 2 and 4")
 	ErrNotRoomMember          = errors.New("sender is not a room member")
 	ErrEventSequenceViolation = errors.New("event sequence must be strictly increasing")
+	ErrInvalidRoomID          = errors.New("room id must be 1-32 chars [A-Z0-9_-]")
+	ErrUnableToAllocateRoomID = errors.New("unable to allocate room id")
+)
+
+const (
+	MinPlayerID      = 1
+	MaxPlayerID      = 4
+	MinRoomIDLength  = 1
+	MaxRoomIDLength  = 32
+	roomCodeAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 )
 
 type Session struct {
@@ -29,7 +43,6 @@ type Room struct {
 	Sessions            map[string]*Session
 	PlayerIDs           map[string]int
 	LastSenderSequences map[string]int64
-	NextPlayerID        int
 	ServerSequence      int64
 }
 
@@ -58,59 +71,131 @@ func normalizeMaxPlayers(maxPlayers int, fallback int) (int, error) {
 	return maxPlayers, nil
 }
 
-func (m *Manager) Create(roomID string, maxPlayers int) error {
-	if roomID == "" {
-		return ErrMissingRoomID
+func CanonicalizeRoomID(raw string) (string, error) {
+	id := strings.ToUpper(strings.TrimSpace(raw))
+	if len(id) < MinRoomIDLength || len(id) > MaxRoomIDLength {
+		return "", ErrInvalidRoomID
 	}
+	for _, r := range id {
+		if !(unicode.IsDigit(r) || (r >= 'A' && r <= 'Z') || r == '-' || r == '_') {
+			return "", ErrInvalidRoomID
+		}
+	}
+	return id, nil
+}
+
+func IsValidPlayerID(playerID int) bool {
+	return playerID >= MinPlayerID && playerID <= MaxPlayerID
+}
+
+func assignNextPlayerID(room *Room) (int, error) {
+	for candidate := MinPlayerID; candidate <= room.MaxPlayers; candidate++ {
+		inUse := false
+		for _, existing := range room.PlayerIDs {
+			if existing == candidate {
+				inUse = true
+				break
+			}
+		}
+		if !inUse {
+			return candidate, nil
+		}
+	}
+	return 0, ErrRoomFull
+}
+
+func randomRoomID() (string, error) {
+	b := make([]byte, 6)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("read random: %w", err)
+	}
+	out := make([]byte, len(b))
+	for i := range b {
+		out[i] = roomCodeAlphabet[int(b[i])%len(roomCodeAlphabet)]
+	}
+	return string(out), nil
+}
+
+func (m *Manager) Create(hostProvidedCode string, maxPlayers int) (string, error) {
 	capacity, err := normalizeMaxPlayers(maxPlayers, m.maxPerRoom)
 	if err != nil {
-		return err
+		return "", err
+	}
+
+	var canonical string
+	if strings.TrimSpace(hostProvidedCode) != "" {
+		canonical, err = CanonicalizeRoomID(hostProvidedCode)
+		if err != nil {
+			return "", err
+		}
 	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if _, ok := m.rooms[roomID]; ok {
-		return ErrRoomAlreadyExists
-	}
 	if len(m.rooms) >= m.maxRooms {
-		return ErrRoomLimit
+		return "", ErrRoomLimit
 	}
-	m.rooms[roomID] = &Room{
-		ID:                  roomID,
+
+	if canonical == "" {
+		for attempts := 0; attempts < 32; attempts++ {
+			generated, genErr := randomRoomID()
+			if genErr != nil {
+				return "", genErr
+			}
+			if _, exists := m.rooms[generated]; !exists {
+				canonical = generated
+				break
+			}
+		}
+		if canonical == "" {
+			return "", ErrUnableToAllocateRoomID
+		}
+	}
+
+	if _, ok := m.rooms[canonical]; ok {
+		return "", ErrRoomAlreadyExists
+	}
+	m.rooms[canonical] = &Room{
+		ID:                  canonical,
 		MaxPlayers:          capacity,
 		Sessions:            make(map[string]*Session),
 		PlayerIDs:           make(map[string]int),
 		LastSenderSequences: make(map[string]int64),
-		NextPlayerID:        1,
 	}
-	return nil
+	return canonical, nil
 }
 
-func (m *Manager) Join(roomID string, s *Session) (int, int, error) {
-	if roomID == "" {
-		return 0, 0, ErrMissingRoomID
+func (m *Manager) Join(roomID string, s *Session) (string, int, int, int, error) {
+	if strings.TrimSpace(roomID) == "" {
+		return "", 0, 0, 0, ErrMissingRoomID
+	}
+	canonicalRoomID, err := CanonicalizeRoomID(roomID)
+	if err != nil {
+		return "", 0, 0, 0, err
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	room, ok := m.rooms[roomID]
+	room, ok := m.rooms[canonicalRoomID]
 	if !ok {
-		return 0, 0, ErrRoomNotFound
+		return "", 0, 0, 0, ErrRoomNotFound
 	}
 
 	if existing, ok := room.PlayerIDs[s.ID]; ok {
-		return existing, len(room.Sessions), nil
+		return room.ID, existing, len(room.Sessions), room.MaxPlayers, nil
 	}
 
 	if len(room.Sessions) >= room.MaxPlayers {
-		return 0, 0, ErrRoomFull
+		return "", 0, 0, 0, ErrRoomFull
 	}
-	playerID := room.NextPlayerID
-	room.NextPlayerID++
+	playerID, assignErr := assignNextPlayerID(room)
+	if assignErr != nil {
+		return "", 0, 0, 0, assignErr
+	}
 	room.PlayerIDs[s.ID] = playerID
 	room.Sessions[s.ID] = s
-	return playerID, len(room.Sessions), nil
+	return room.ID, playerID, len(room.Sessions), room.MaxPlayers, nil
 }
 
 func (m *Manager) Leave(roomID, sessionID string) {

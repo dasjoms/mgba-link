@@ -105,3 +105,17 @@ func TestClientSequenceValidation(t *testing.T) {
 		})
 	}
 }
+
+func TestCreateRoomAllowsServerGeneratedRoomID(t *testing.T) {
+	payload := []byte(`{"intent":"createRoom","clientSequence":1,"maxPlayers":2}`)
+	if _, violation := ParseAndValidateClientIntent(payload); violation != nil {
+		t.Fatalf("expected no violation when roomName omitted, got %#v", violation)
+	}
+}
+
+func TestPublishLinkEventSenderPlayerIDRange(t *testing.T) {
+	invalid := []byte(`{"intent":"publishLinkEvent","clientSequence":3,"event":{"sequence":1,"senderPlayerId":5,"tickMarker":5,"payload":"AQ=="}}`)
+	if _, violation := ParseAndValidateClientIntent(invalid); violation == nil || violation.Code != 400 {
+		t.Fatalf("expected 400 for out-of-range senderPlayerId, got %#v", violation)
+	}
+}
