@@ -70,6 +70,44 @@ func (s *Server) writeProtocolViolationAndDisconnect(conn net.Conn, v *protocol.
 	_ = writeEvent(conn, "disconnected", map[string]any{"reason": reason, "message": v.Message})
 }
 
+func timeoutCodeForDuration(d time.Duration) int {
+	if d <= 0 {
+		return 400
+	}
+	if d < time.Second {
+		return 408
+	}
+	seconds := int(d / time.Second)
+	if seconds < 1 {
+		seconds = 1
+	}
+	if seconds > 999 {
+		seconds = 999
+	}
+	return 400000 + seconds
+}
+
+func (s *Server) leaveRoomAndNotifyPeers(roomID, sessionID string, playerID int, reason string) {
+	if roomID == "" {
+		return
+	}
+	leftPlayerID, participants := s.rooms.LeaveWithParticipants(roomID, sessionID)
+	if leftPlayerID == 0 {
+		leftPlayerID = playerID
+	}
+	if leftPlayerID == 0 {
+		return
+	}
+	if reason == "" {
+		reason = "protocolError"
+	}
+	peerLeft, err := protocol.MarshalEvent("peerLeft", map[string]any{"roomId": roomID, "playerId": leftPlayerID, "reason": reason})
+	if err != nil {
+		return
+	}
+	rooms.BroadcastOrdered(participants, peerLeft)
+}
+
 func (s *Server) handleConn(conn net.Conn) {
 	id := atomic.AddUint64(&s.nextConnID, 1)
 	sessionID := fmt.Sprintf("c-%d", id)
@@ -87,7 +125,7 @@ func (s *Server) handleConn(conn net.Conn) {
 	defer close(session.Send)
 	defer func() {
 		if roomID != "" {
-			s.rooms.Leave(roomID, session.ID)
+			s.leaveRoomAndNotifyPeers(roomID, session.ID, playerID, "clientRequested")
 		}
 		state = stateDisconnected
 	}()
@@ -107,6 +145,16 @@ func (s *Server) handleConn(conn net.Conn) {
 		_ = conn.SetReadDeadline(time.Now().Add(s.cfg.HeartbeatTimeout))
 		payload, err := protocol.ReadFrame(conn)
 		if err != nil {
+			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+				timeoutCode := timeoutCodeForDuration(s.cfg.HeartbeatTimeout)
+				s.writeProtocolViolationAndDisconnect(conn, &protocol.ProtocolViolation{Code: timeoutCode, Message: "heartbeat timeout", Reason: "networkTimeout"})
+				if roomID != "" {
+					s.leaveRoomAndNotifyPeers(roomID, session.ID, playerID, "networkTimeout")
+					roomID = ""
+					playerID = 0
+				}
+				return
+			}
 			if v, ok := err.(*protocol.ProtocolViolation); ok {
 				s.writeProtocolViolationAndDisconnect(conn, v)
 			}
@@ -185,7 +233,7 @@ func (s *Server) handleConn(conn net.Conn) {
 				return
 			}
 			if roomID != "" {
-				s.rooms.Leave(roomID, session.ID)
+				s.leaveRoomAndNotifyPeers(roomID, session.ID, playerID, "clientRequested")
 				roomID = ""
 				playerID = 0
 				state = stateHandshaken
@@ -235,9 +283,12 @@ func (s *Server) handleConn(conn net.Conn) {
 		select {
 		case <-heartbeatTicker.C:
 			if time.Since(lastHeartbeat) > s.cfg.HeartbeatTimeout {
-				s.writeProtocolViolationAndDisconnect(conn, &protocol.ProtocolViolation{Code: 400, Message: "heartbeat timeout", Reason: "networkTimeout"})
+				timeoutCode := timeoutCodeForDuration(s.cfg.HeartbeatTimeout)
+				s.writeProtocolViolationAndDisconnect(conn, &protocol.ProtocolViolation{Code: timeoutCode, Message: "heartbeat timeout", Reason: "networkTimeout"})
 				if roomID != "" {
-					s.rooms.Leave(roomID, session.ID)
+					s.leaveRoomAndNotifyPeers(roomID, session.ID, playerID, "networkTimeout")
+					roomID = ""
+					playerID = 0
 				}
 				return
 			}
