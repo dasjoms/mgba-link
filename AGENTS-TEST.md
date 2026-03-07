@@ -7,6 +7,19 @@ The initial Qt configure failed for environment reasons, not because of the `Tcp
 2. Qt dev packages were not installed, so `find_package(Qt6 ... )` could not resolve.
 3. In this repo, `src/platform/qt/CMakeLists.txt` appstream generation assumes git tags are present; in shallow/tagless environments, configure can fail unless `-DSKIP_GIT=ON` is passed.
 
+## Why `ctest --test-dir build --output-on-failure` often reports no runnable tests
+There are two common agent-environment pitfalls:
+
+1. **No `build/` directory exists yet**
+   - `ctest --test-dir build --output-on-failure` fails immediately with `Failed to change working directory`.
+   - Fix: run CMake configure/build first.
+
+2. **`BUILD_SUITE` is not enabled because `cmocka` is missing**
+   - By default, this repo sets `BUILD_SUITE=OFF`, and only enables CTest entries when suite/test targets are on.
+   - Even when `-DBUILD_SUITE=ON` is requested, CMake silently forces it back `OFF` if `cmocka` is not found.
+   - Symptom: `ctest` runs but prints `No tests were found!!!`.
+   - Fix: install `libcmocka-dev`, then configure with `-DBUILD_SUITE=ON`.
+
 ## Baseline packages for full Qt + GBA v1 link-net work
 For Ubuntu/Debian agent images, install at least:
 
@@ -14,6 +27,7 @@ For Ubuntu/Debian agent images, install at least:
 sudo apt-get update
 sudo apt-get install -y \
   build-essential cmake ninja-build pkg-config git \
+  libcmocka-dev \
   qt6-base-dev qt6-multimedia-dev qt6-tools-dev qt6-tools-dev-tools libqt6opengl6-dev \
   libxkbcommon-dev libxkbcommon-x11-dev libegl1-mesa-dev libgl1-mesa-dev \
   libzip-dev zipcmp zipmerge ziptool
@@ -28,8 +42,17 @@ sudo apt-get install -y libavcodec-dev libavformat-dev libavutil-dev libswscale-
 ## Configure/build commands that work in agent environments
 Use `SKIP_GIT=ON` to avoid tag parsing failures in detached/shallow environments.
 
+For running repository tests through `ctest`, you must explicitly enable the suite:
+
 ```bash
-cmake -S . -B build -DBUILD_QT=ON -DBUILD_SDL=OFF -DSKIP_GIT=ON
+cmake -S . -B build -DBUILD_QT=ON -DBUILD_SDL=OFF -DBUILD_SUITE=ON -DSKIP_GIT=ON
+cmake --build build -j"$(nproc)"
+```
+
+If you only need test binaries (and want to avoid Qt dependency setup), use:
+
+```bash
+cmake -S . -B build -DBUILD_QT=OFF -DBUILD_SDL=OFF -DBUILD_SUITE=ON -DSKIP_GIT=ON
 cmake --build build -j"$(nproc)"
 ```
 
@@ -60,14 +83,21 @@ cmake -S . -B build -DBUILD_QT=ON -DBUILD_SDL=OFF -DUSE_LIBZIP=OFF -DUSE_MINIZIP
 Run these in order and include outputs in PR notes:
 
 ```bash
-# 1) Clean configure
-cmake -S . -B build -DBUILD_QT=ON -DBUILD_SDL=OFF -DSKIP_GIT=ON
+# 1) Install test dependency (required so BUILD_SUITE stays ON)
+sudo apt-get update && sudo apt-get install -y libcmocka-dev
 
-# 2) Full compile (validates Qt + GBA integration)
+# 2) Clean configure
+cmake -S . -B build -DBUILD_QT=ON -DBUILD_SDL=OFF -DBUILD_SUITE=ON -DSKIP_GIT=ON
+
+# 3) Full compile (validates Qt + GBA integration)
 cmake --build build -j"$(nproc)"
 
-# 3) Tests when available
+# 4) Run tests
 ctest --test-dir build --output-on-failure
 ```
+
+Expected behavior:
+- If `BUILD_SUITE=OFF` (or forced off by missing `cmocka`), `ctest` reports no tests.
+- If `BUILD_SUITE=ON` and build succeeds, `ctest` discovers the unit test executables.
 
 And for netplay transport changes, add a small local smoke harness or targeted unit test where possible (then keep it in-tree if generally useful).
