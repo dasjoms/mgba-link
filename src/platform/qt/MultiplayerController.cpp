@@ -192,8 +192,96 @@ MultiplayerController::MultiplayerController() {
 
 MultiplayerController::~MultiplayerController() {
 	mLockstepDeinit(&m_lockstep);
-	if (m_platform == mPLATFORM_GBA) {
+	deinitBackend();
+}
+
+bool MultiplayerController::initBackendForPlatform(mPlatform platform) {
+	switch (platform) {
+#ifdef M_CORE_GBA
+	case mPLATFORM_GBA:
+		// Local-only backend path today: this coordinator drives same-process lockstep link.
+		// Remote-session backend events will eventually augment or replace this initialization path.
+		GBASIOLockstepCoordinatorInit(&m_gbaCoordinator);
+		return true;
+#endif
+#ifdef M_CORE_GB
+	case mPLATFORM_GB:
+		GBSIOLockstepInit(&m_gbLockstep);
+		return true;
+#endif
+	default:
+		return false;
+	}
+}
+
+void MultiplayerController::deinitBackend() {
+	switch (m_platform) {
+#ifdef M_CORE_GBA
+	case mPLATFORM_GBA:
 		GBASIOLockstepCoordinatorDeinit(&m_gbaCoordinator);
+		break;
+#endif
+	default:
+		break;
+	}
+}
+
+void MultiplayerController::setPlayerAttached(Player& player, bool attached) {
+	player.attached = attached;
+}
+
+bool MultiplayerController::attachPlayerToBackend(Player& player, bool delayedAttach) {
+	switch (player.controller->platform()) {
+#ifdef M_CORE_GBA
+	case mPLATFORM_GBA: {
+		if (delayedAttach) {
+			return true;
+		}
+		struct mCore* core = player.controller->thread()->core;
+		// Local-only attach path: node is attached to the lockstep coordinator and then exposed as
+		// the link-port peripheral. Future remote session backends should call setPlayerAttached()
+		// from their own lifecycle events without requiring this coordinator call.
+		GBASIOLockstepCoordinatorAttach(&m_gbaCoordinator, player.node.gba);
+		core->setPeripheral(core, mPERIPH_GBA_LINK_PORT, &player.node.gba->d);
+		setPlayerAttached(player, true);
+		return true;
+	}
+#endif
+#ifdef M_CORE_GB
+	case mPLATFORM_GB:
+		setPlayerAttached(player, true);
+		return true;
+#endif
+	default:
+		return false;
+	}
+}
+
+void MultiplayerController::detachPlayerFromBackend(Player& player, mCoreThread* thread) {
+	switch (player.controller->platform()) {
+#ifdef M_CORE_GBA
+	case mPLATFORM_GBA: {
+		GBA* gba = static_cast<GBA*>(thread->core->board);
+		GBASIODriver* node = gba->sio.driver;
+		if (node == &player.node.gba->d) {
+			thread->core->setPeripheral(thread->core, mPERIPH_GBA_LINK_PORT, NULL);
+		}
+		if (player.attached) {
+			// Local-only detach path: coordinator membership currently tracks active players.
+			// Remote backend disconnect events should eventually feed into this shared state transition.
+			GBASIOLockstepCoordinatorDetach(&m_gbaCoordinator, player.node.gba);
+		}
+		setPlayerAttached(player, false);
+		break;
+	}
+#endif
+#ifdef M_CORE_GB
+	case mPLATFORM_GB:
+		setPlayerAttached(player, false);
+		break;
+#endif
+	default:
+		break;
 	}
 }
 
@@ -206,18 +294,7 @@ bool MultiplayerController::attachGame(CoreController* controller) {
 
 	bool doDelayedAttach = false;
 	if (m_platform == mPLATFORM_NONE) {
-		switch (controller->platform()) {
-#ifdef M_CORE_GBA
-		case mPLATFORM_GBA:
-			GBASIOLockstepCoordinatorInit(&m_gbaCoordinator);
-			break;
-#endif
-#ifdef M_CORE_GB
-		case mPLATFORM_GB:
-			GBSIOLockstepInit(&m_gbLockstep);
-			break;
-#endif
-		default:
+		if (!initBackendForPlatform(controller->platform())) {
 			return false;
 		}
 		m_platform = controller->platform();
@@ -284,9 +361,9 @@ bool MultiplayerController::attachGame(CoreController* controller) {
 		GBSIOLockstepNodeCreate(node);
 		GBSIOLockstepAttachNode(&m_gbLockstep, node);
 		player.node.gb = node;
-		player.attached = true;
 
 		GBSIOSetDriver(&gb->sio, &node->d);
+		attachPlayerToBackend(player, false);
 		break;
 	}
 #endif
@@ -330,10 +407,7 @@ bool MultiplayerController::attachGame(CoreController* controller) {
 			if (player.attached) {
 				continue;
 			}
-			struct mCore* core = player.controller->thread()->core;
-			GBASIOLockstepCoordinatorAttach(&m_gbaCoordinator, player.node.gba);
-			core->setPeripheral(core, mPERIPH_GBA_LINK_PORT, &player.node.gba->d);
-			player.attached = true;
+			attachPlayerToBackend(player, false);
 		}
 	}
 
@@ -367,22 +441,14 @@ void MultiplayerController::detachGame(CoreController* controller) {
 		LOG(QT, WARN) << tr("Trying to detach a multiplayer player that's not attached");
 		return;
 	}
+	Player& p = m_pids.find(pid).value();
+	detachPlayerFromBackend(p, thread);
 	switch (controller->platform()) {
 #ifdef M_CORE_GBA
-	case mPLATFORM_GBA: {
-		GBA* gba = static_cast<GBA*>(thread->core->board);
-		Player& p = m_pids.find(pid).value();
-		GBASIODriver* node = gba->sio.driver;
-		if (node == &p.node.gba->d) {
-			thread->core->setPeripheral(thread->core, mPERIPH_GBA_LINK_PORT, NULL);
-		}
-		if (p.attached) {
-			GBASIOLockstepCoordinatorDetach(&m_gbaCoordinator, p.node.gba);
-		}
+	case mPLATFORM_GBA:
 		delete reinterpret_cast<LockstepUser*>(p.node.gba->user);
 		delete p.node.gba;
 		break;
-	}
 #endif
 #ifdef M_CORE_GB
 	case mPLATFORM_GB: {
@@ -402,7 +468,6 @@ void MultiplayerController::detachGame(CoreController* controller) {
 
 	// TODO: This might change if we replace the ROM--make sure to handle this properly
 	QPair<QString, QString> path(controller->path(), controller->baseDirectory());
-	Player& p = m_pids.find(pid).value();
 	if (!p.saveId) {
 		LOG(QT, WARN) << tr("Clearing invalid save ID");
 	} else {
@@ -420,9 +485,7 @@ void MultiplayerController::detachGame(CoreController* controller) {
 
 	m_pids.remove(pid);
 	if (m_pids.size() == 0) {
-		if (m_platform == mPLATFORM_GBA) {
-			GBASIOLockstepCoordinatorDeinit(&m_gbaCoordinator);
-		}
+		deinitBackend();
 		m_platform = mPLATFORM_NONE;
 	} else {
 		fixOrder();

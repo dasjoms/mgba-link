@@ -75,6 +75,12 @@ private:
 	const Player* player(int id) const;
 	void fixOrder();
 
+	bool initBackendForPlatform(mPlatform platform);
+	void deinitBackend();
+	bool attachPlayerToBackend(Player& player, bool delayedAttach);
+	void detachPlayerFromBackend(Player& player, mCoreThread* thread);
+	void setPlayerAttached(Player& player, bool attached);
+
 	union {
 		mLockstep m_lockstep;
 #ifdef M_CORE_GB
