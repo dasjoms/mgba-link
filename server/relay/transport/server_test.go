@@ -207,7 +207,6 @@ func TestHeartbeatTimeoutDropsClientAndNotifiesPeers(t *testing.T) {
 				return
 			case <-ticker.C:
 				_ = protocol.WriteFrame(c1, []byte(`{"intent":"heartbeat","clientSequence":2,"heartbeatCounter":`+fmt.Sprint(counter)+`}`))
-				_, _ = protocol.ReadFrame(c1)
 				counter++
 			}
 		}
@@ -223,8 +222,20 @@ func TestHeartbeatTimeoutDropsClientAndNotifiesPeers(t *testing.T) {
 		t.Fatalf("expected networkTimeout disconnected, got %#v", timeoutDisc)
 	}
 
-	peerLeft := readEventTimeout(t, c1, time.Second)
-	if peerLeft["kind"] != "peerLeft" || int(peerLeft["playerId"].(float64)) != leftPlayerID || peerLeft["reason"] != "networkTimeout" {
+	deadline := time.Now().Add(time.Second)
+	var peerLeft map[string]any
+	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			t.Fatalf("timed out waiting for peerLeft for player %d", leftPlayerID)
+		}
+		evt := readEventTimeout(t, c1, remaining)
+		if evt["kind"] == "peerLeft" {
+			peerLeft = evt
+			break
+		}
+	}
+	if int(peerLeft["playerId"].(float64)) != leftPlayerID || peerLeft["reason"] != "networkTimeout" {
 		t.Fatalf("expected peerLeft with networkTimeout reason for player %d, got %#v", leftPlayerID, peerLeft)
 	}
 }

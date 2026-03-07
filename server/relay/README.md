@@ -52,6 +52,42 @@ Transport uses 4-byte big-endian length-prefixed framing, followed by UTF-8 JSON
 - Server -> client uses top-level discriminator `kind` (`playerAssigned`, `roomJoined`, `inboundLinkEvent`, `heartbeatAck`, `error`, `disconnected`).
 - Hard protocol violations emit `error` and then `disconnected` before socket close.
 
+
+## Automated relay E2E coverage
+
+The relay includes TCP harness tests that boot a real listener and connect synthetic clients to validate:
+
+- handshake success and auth failure rejection,
+- room create/join with deterministic player assignment,
+- ordered `inboundLinkEvent` rebroadcast with monotonic `serverSequence`,
+- rejection paths (`room is full`, bad publish sequence, invalid payload),
+- heartbeat timeout cleanup with peer notification, and
+- legacy fixture compatibility policy for incoming `linkEvent` style payloads.
+
+Run the relay E2E suite:
+
+```bash
+cd server/relay
+go test ./transport -run TestRelayE2E -count=1
+```
+
+### Legacy `linkEvent` compatibility policy
+
+Current policy is **strict rejection** for legacy incoming payloads that use `kind:"linkEvent"` instead of `intent`. Those payloads are treated as protocol violations (`400` + `disconnected` with `protocolError`) and are not normalized into `publishLinkEvent`.
+
+Fixture used by tests: `transport/testdata/legacy_link_event.json`.
+
+## Manual smoke script
+
+A quick local smoke check script is provided:
+
+```bash
+cd server/relay
+./scripts/relay_smoke.sh
+```
+
+The smoke script starts a local relay instance, opens two synthetic clients, executes hello/create/join/publish flow, and asserts that both clients receive `inboundLinkEvent` with `serverSequence: 1`.
+
 ## Troubleshooting
 
 The relay emits structured JSON logs for inbound/outbound message flow, state transitions, and protocol violations. Sensitive fields (for example `authToken`, `token`, and `secret`) are redacted before being written.

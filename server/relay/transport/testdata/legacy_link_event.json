@@ -1,0 +1,10 @@
+{
+  "kind": "linkEvent",
+  "clientSequence": 99,
+  "event": {
+    "sequence": 7,
+    "senderPlayerId": 1,
+    "tickMarker": 100,
+    "payload": "AQ=="
+  }
+}
