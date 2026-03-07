@@ -159,6 +159,30 @@ static bool _decodeTransferResult(struct GBASIONetDriver* net, const struct GBAS
 	return true;
 }
 
+static void _pollInboundControlEvents(struct GBASIONetDriver* net) {
+	if (!net->inboundQueue) {
+		return;
+	}
+
+	struct GBASIONetEvent event;
+	while (GBASIONetEventQueueTryPop(net->inboundQueue, &event)) {
+		if (event.type == GBA_SIO_NET_EV_SESSION_FAILURE) {
+			_applySessionFailure(net, &event);
+			continue;
+		}
+		if (_isTopologyEvent(&event)) {
+			_applyTopologyEvent(net, &event);
+			continue;
+		}
+
+		/* Keep transfer results queued for the active transfer poll path. */
+		if (event.type == GBA_SIO_NET_EV_TRANSFER_RESULT) {
+			GBASIONetEventQueuePush(net->inboundQueue, &event);
+		}
+		return;
+	}
+}
+
 static bool _pollInboundForCurrentTransfer(struct GBASIONetDriver* net) {
 	if (!net->inboundQueue) {
 		return false;
@@ -505,6 +529,7 @@ static uint16_t GBASIONetDriverWriteRCNT(struct GBASIODriver* driver, uint16_t v
 
 static bool GBASIONetDriverStart(struct GBASIODriver* driver) {
 	struct GBASIONetDriver* net = (struct GBASIONetDriver*) driver;
+	_pollInboundControlEvents(net);
 	if (net->sessionDisconnected || net->protocolError || net->state < GBA_SIO_NET_IN_ROOM) {
 		return false;
 	}
@@ -529,7 +554,7 @@ static bool GBASIONetDriverStart(struct GBASIODriver* driver) {
 	}
 
 	if (net->committedTransferReady && net->committedTransferOrdinal == net->transferOrdinal) {
-		if (net->state >= GBA_SIO_NET_IN_ROOM) {
+		if (net->state == GBA_SIO_NET_IN_ROOM) {
 			net->state = GBA_SIO_NET_ACTIVE_TRANSFER;
 		}
 		return true;
@@ -537,13 +562,13 @@ static bool GBASIONetDriverStart(struct GBASIODriver* driver) {
 
 	if (!_pollInboundForCurrentTransfer(net)) {
 		_transitionLatePolicyState(net, GBA_SIO_NET_LATE_WAITING_WITHIN_BUDGET);
-		if (net->state >= GBA_SIO_NET_IN_ROOM) {
+		if (net->state == GBA_SIO_NET_IN_ROOM) {
 			net->state = GBA_SIO_NET_ACTIVE_TRANSFER;
 		}
 		return false;
 	}
 
-	if (net->state >= GBA_SIO_NET_IN_ROOM) {
+	if (net->state == GBA_SIO_NET_IN_ROOM) {
 		net->state = GBA_SIO_NET_ACTIVE_TRANSFER;
 	}
 	return true;
