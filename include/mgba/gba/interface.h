@@ -117,6 +117,16 @@ struct GBASIODriver {
 	uint32_t (*driverId)(const struct GBASIODriver* renderer);
 	bool (*loadState)(struct GBASIODriver* renderer, const void* state, size_t size);
 	void (*saveState)(struct GBASIODriver* renderer, void** state, size_t* size);
+
+	/*
+	 * Callback contract notes:
+	 * - setMode/start/finish* are the SIO transfer lifecycle seam.
+	 * - finish* is invoked by core timing when SIO completion fires and must return
+	 *   deterministic data for the active mode at that exact boundary.
+	 * - connectedDevices/deviceId must be non-blocking and provide cached topology.
+	 * - saveState/loadState must serialize deterministic adapter state only.
+	 * See doc/netplay/driver-adapter-v1.md for the full adapter contract.
+	 */
 	void (*setMode)(struct GBASIODriver* driver, enum GBASIOMode mode);
 	bool (*handlesMode)(struct GBASIODriver* driver, enum GBASIOMode mode);
 	int (*connectedDevices)(struct GBASIODriver* driver);
