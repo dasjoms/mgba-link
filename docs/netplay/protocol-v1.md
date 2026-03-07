@@ -172,3 +172,17 @@ Implementers should use field names and semantics consistent with:
   - `_sendFrame`
   - `_drainFrames`
   - `_handleFrame`
+
+
+## 9) Logging for desync/debug analysis
+
+Protocol and codec violations should be logged as a single structured line with these fields:
+
+- `direction` (`in`/`out`), `kind`, `roomId`, `playerId`, `sequence`, `serverSequence`, `state`.
+- `code` and concise `reason` for the violation.
+
+Interpretation tips:
+
+- Track `serverSequence` gaps or unexpected jumps to quickly identify ordering/desync faults between relay and client.
+- Compare `direction=out` `sequence` to matching server-side receipt logs to detect dropped or rejected intents.
+- Treat any token/auth/secret fields in `details` as redacted (`<redacted>`) by design when correlating auth failures.

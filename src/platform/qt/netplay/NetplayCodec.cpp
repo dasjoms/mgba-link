@@ -8,7 +8,9 @@
 
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QLoggingCategory>
 #include <QMetaType>
+#include <QRegularExpression>
 #include <QVariant>
 
 #include <limits>
@@ -18,6 +20,59 @@ namespace Netplay {
 namespace {
 
 static const int MAX_WIRE_TEXT = 256;
+
+
+Q_LOGGING_CATEGORY(netplayCodecLog, "netplay.codec")
+
+static bool _isSensitiveLogKey(const QString& key) {
+	static const QRegularExpression tokenRegex(QStringLiteral("(auth|token|secret)"), QRegularExpression::CaseInsensitiveOption);
+	return tokenRegex.match(key).hasMatch();
+}
+
+static QVariant _redactSensitiveVariant(const QVariant& value);
+
+static QVariantMap _redactSensitiveMap(const QVariantMap& map) {
+	QVariantMap redacted;
+	for (auto it = map.constBegin(); it != map.constEnd(); ++it) {
+		if (_isSensitiveLogKey(it.key())) {
+			redacted.insert(it.key(), QStringLiteral("<redacted>"));
+			continue;
+		}
+		redacted.insert(it.key(), _redactSensitiveVariant(it.value()));
+	}
+	return redacted;
+}
+
+static QVariant _redactSensitiveVariant(const QVariant& value) {
+	if (value.canConvert<QVariantMap>()) {
+		return _redactSensitiveMap(value.toMap());
+	}
+	if (value.canConvert<QVariantList>()) {
+		QVariantList redactedList;
+		for (const QVariant& element : value.toList()) {
+			redactedList.append(_redactSensitiveVariant(element));
+		}
+		return redactedList;
+	}
+	return value;
+}
+
+static void _logCodecProtocolViolation(const CodecError& error, const QString& direction, const QString& kind, qint64 sequence, qint64 serverSequence, const QVariantMap& details = QVariantMap()) {
+	QVariantMap merged = _redactSensitiveMap(details);
+	for (auto it = error.details.constBegin(); it != error.details.constEnd(); ++it) {
+		merged.insert(it.key(), _redactSensitiveVariant(it.value()));
+	}
+	qCWarning(netplayCodecLog).noquote()
+		<< QStringLiteral("protocolViolation code=%1 reason=\"%2\" layer=Codec category=%3 direction=%4 kind=%5 roomId=n/a playerId=n/a sequence=%6 serverSequence=%7 state=n/a details=%8")
+			.arg(error.code)
+			.arg(error.message)
+			.arg(QString::fromLatin1(netplayErrorCategoryName(error.category)))
+			.arg(direction)
+			.arg(kind.isEmpty() ? QStringLiteral("n/a") : kind)
+			.arg(sequence >= 0 ? QString::number(sequence) : QStringLiteral("n/a"))
+			.arg(serverSequence >= 0 ? QString::number(serverSequence) : QStringLiteral("n/a"))
+			.arg(QString::fromUtf8(QJsonDocument::fromVariant(merged).toJson(QJsonDocument::Compact)));
+}
 
 
 static bool _isStringVariant(const QVariant& value) {
@@ -338,6 +393,8 @@ static CodecError _validateDisconnected(const QVariantMap& message) {
 QByteArray encodeFrame(const QVariantMap& payload, CodecError* error) {
 	CodecError validationError = _validateOutbound(payload);
 	if (validationError) {
+		const qint64 sequence = payload.value(QStringLiteral("clientSequence")).toLongLong();
+		_logCodecProtocolViolation(validationError, QStringLiteral("out"), payload.value(QStringLiteral("intent")).toString(), sequence, -1, payload);
 		if (error) {
 			*error = validationError;
 		}
@@ -348,6 +405,8 @@ QByteArray encodeFrame(const QVariantMap& payload, CodecError* error) {
 	if (frame.value(QStringLiteral("intent")).toString() == QStringLiteral(CLIENT_INTENT_PUBLISH_LINK_EVENT)) {
 		CodecError binaryError;
 		if (!_encodeBinaryField(&frame, QStringLiteral("payload"), &binaryError)) {
+			const qint64 sequence = frame.value(QStringLiteral("clientSequence")).toLongLong();
+			_logCodecProtocolViolation(binaryError, QStringLiteral("out"), frame.value(QStringLiteral("intent")).toString(), sequence, -1, frame);
 			if (error) {
 				*error = binaryError;
 			}
@@ -357,8 +416,11 @@ QByteArray encodeFrame(const QVariantMap& payload, CodecError* error) {
 
 	QJsonDocument document = QJsonDocument::fromVariant(frame);
 	if (!document.isObject()) {
+		CodecError objectError = _error(114, QStringLiteral("Intent encoding failed"), QVariantMap(), NetplayErrorCategory::MalformedMessage);
+		const qint64 sequence = frame.value(QStringLiteral("clientSequence")).toLongLong();
+		_logCodecProtocolViolation(objectError, QStringLiteral("out"), frame.value(QStringLiteral("intent")).toString(), sequence, -1, frame);
 		if (error) {
-			*error = _error(114, QStringLiteral("Intent encoding failed"), QVariantMap(), NetplayErrorCategory::MalformedMessage);
+			*error = objectError;
 		}
 		return QByteArray();
 	}
@@ -378,6 +440,7 @@ DecodedMessage decodeFrame(const QByteArray& payload) {
 			{QStringLiteral("offset"), parseError.offset},
 			{QStringLiteral("jsonError"), parseError.errorString()}
 		});
+		_logCodecProtocolViolation(decoded.error, QStringLiteral("in"), QStringLiteral("unknown"), -1, -1);
 		return decoded;
 	}
 
@@ -385,6 +448,7 @@ DecodedMessage decodeFrame(const QByteArray& payload) {
 	CodecError error;
 	if (!_requireString(message, QStringLiteral("kind"), &decoded.kind, &error)) {
 		decoded.error = error;
+		_logCodecProtocolViolation(decoded.error, QStringLiteral("in"), QStringLiteral("unknown"), -1, -1, message);
 		return decoded;
 	}
 
@@ -410,6 +474,15 @@ DecodedMessage decodeFrame(const QByteArray& payload) {
 
 	if (error) {
 		decoded.error = error;
+		qint64 serverSequence = -1;
+		if (message.contains(QStringLiteral("serverSequence"))) {
+			bool ok = false;
+			const qint64 parsedServerSequence = message.value(QStringLiteral("serverSequence")).toLongLong(&ok);
+			if (ok) {
+				serverSequence = parsedServerSequence;
+			}
+		}
+		_logCodecProtocolViolation(decoded.error, QStringLiteral("in"), decoded.kind, -1, serverSequence, message);
 		return decoded;
 	}
 
