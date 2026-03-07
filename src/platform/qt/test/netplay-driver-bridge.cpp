@@ -34,6 +34,22 @@ private slots:
 		QCOMPARE(net.d.finishNormal8(&net.d), static_cast<uint8_t>(0x5A));
 	}
 
+	void sessionFailureEventForcesDisconnectedFallbackPolicy() {
+		DriverEventQueueBridge bridge;
+		GBASIONetDriver net;
+		GBASIONetDriverCreate(&net);
+		GBASIONetDriverSetQueues(&net, nullptr, bridge.inboundQueue());
+		net.state = GBA_SIO_NET_IN_ROOM;
+		net.localPlayerId = 1;
+		net.mode = GBA_SIO_NORMAL_8;
+
+		QVERIFY(!net.d.start(&net.d));
+		QVERIFY(bridge.enqueueSessionFailure(GBA_SIO_NET_FAIL_DISCONNECTED, 0, 3));
+		QVERIFY(!net.d.start(&net.d));
+		QCOMPARE(net.state, GBA_SIO_NET_DISCONNECTED);
+		QCOMPARE(net.d.finishNormal8(&net.d), static_cast<uint8_t>(0xFF));
+	}
+
 	void peerAttachDetachEventsUpdateTopology() {
 		DriverEventQueueBridge bridge;
 		GBASIONetDriver net;

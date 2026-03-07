@@ -24,6 +24,13 @@ enum GBASIONetDriverState {
 	GBA_SIO_NET_DEGRADED,
 };
 
+enum GBASIONetLatePacketPolicyState {
+	GBA_SIO_NET_LATE_ON_TIME,
+	GBA_SIO_NET_LATE_WAITING_WITHIN_BUDGET,
+	GBA_SIO_NET_LATE_MISSED_DEADLINE,
+	GBA_SIO_NET_LATE_DEGRADED_PERSISTENT,
+};
+
 struct GBASIONetDriver {
 	struct GBASIODriver d;
 	struct GBASIONetEventQueue* outboundQueue;
@@ -44,6 +51,12 @@ struct GBASIONetDriver {
 	bool protocolError;
 	int64_t nextOutboundSequence;
 	uint32_t transferOrdinal;
+	enum GBASIONetLatePacketPolicyState latePolicyState;
+	uint32_t lateMissCount;
+	uint32_t lateMissThreshold;
+	bool sessionDisconnected;
+	enum GBASIONetSessionFailureKind lastFailureKind;
+	int lastFailureCode;
 };
 
 void GBASIONetDriverCreate(struct GBASIONetDriver* driver);
