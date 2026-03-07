@@ -142,14 +142,14 @@ func TestPublishLinkEventSequenceValidationAndServerSequenceOrdering(t *testing.
 	_ = readEvent(t, c2) // playerAssigned in room
 	_ = readEvent(t, c2) // roomJoined
 
-	writeIntent(t, c1, `{"intent":"publishLinkEvent","clientSequence":2,"event":{"sequence":1,"senderPlayerId":99,"tickMarker":5,"payload":"AQ=="}}`)
+	writeIntent(t, c1, `{"intent":"publishLinkEvent","clientSequence":2,"event":{"sequence":1,"senderPlayerId":1,"tickMarker":5,"payload":"AQ=="}}`)
 	in1a := readEvent(t, c1)
 	in1b := readEvent(t, c2)
 	if int(in1a["serverSequence"].(float64)) != 1 || int(in1b["serverSequence"].(float64)) != 1 {
 		t.Fatalf("expected serverSequence 1 for first publish, got c1=%#v c2=%#v", in1a, in1b)
 	}
 
-	writeIntent(t, c1, `{"intent":"publishLinkEvent","clientSequence":3,"event":{"sequence":1,"senderPlayerId":99,"tickMarker":6,"payload":"AQ=="}}`)
+	writeIntent(t, c1, `{"intent":"publishLinkEvent","clientSequence":3,"event":{"sequence":1,"senderPlayerId":1,"tickMarker":6,"payload":"AQ=="}}`)
 	errEvt := readEvent(t, c1)
 	if errEvt["kind"] != "error" || int(errEvt["code"].(float64)) != 409 {
 		t.Fatalf("expected sequence conflict error 409, got %#v", errEvt)

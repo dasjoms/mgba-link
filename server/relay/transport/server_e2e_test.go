@@ -170,8 +170,8 @@ func TestRelayE2EHandshakeRoomRebroadcastAndRejections(t *testing.T) {
 		t.Fatalf("owner expected room playerAssigned=1, got %#v", assigned)
 	}
 	joined := owner.readEvent(time.Second)
-	if joined["kind"] != "roomJoined" || int(joined["memberCount"].(float64)) != 1 {
-		t.Fatalf("owner expected roomJoined memberCount=1, got %#v", joined)
+	if joined["kind"] != "roomJoined" || int(joined["memberCount"].(float64)) != 1 || joined["roomId"] != "E2E-ROOM" {
+		t.Fatalf("owner expected roomJoined memberCount=1 canonical roomId=E2E-ROOM, got %#v", joined)
 	}
 
 	guest := dialHarnessClient(t, addr, "guest")
@@ -185,8 +185,8 @@ func TestRelayE2EHandshakeRoomRebroadcastAndRejections(t *testing.T) {
 		t.Fatalf("guest expected room playerAssigned=2, got %#v", gAssigned)
 	}
 	gJoined := guest.readEvent(time.Second)
-	if gJoined["kind"] != "roomJoined" || int(gJoined["memberCount"].(float64)) != 2 {
-		t.Fatalf("guest expected roomJoined memberCount=2, got %#v", gJoined)
+	if gJoined["kind"] != "roomJoined" || int(gJoined["memberCount"].(float64)) != 2 || gJoined["roomId"] != "E2E-ROOM" {
+		t.Fatalf("guest expected roomJoined memberCount=2 canonical roomId=E2E-ROOM, got %#v", gJoined)
 	}
 
 	fullRoomJoiner := dialHarnessClient(t, addr, "full-room-joiner")
@@ -199,7 +199,7 @@ func TestRelayE2EHandshakeRoomRebroadcastAndRejections(t *testing.T) {
 		t.Fatalf("full-room-joiner expected disconnect, got %#v", fullDisc)
 	}
 
-	owner.sendJSON(`{"intent":"publishLinkEvent","clientSequence":2,"event":{"sequence":1,"senderPlayerId":999,"tickMarker":10,"payload":"AQ=="}}`)
+	owner.sendJSON(`{"intent":"publishLinkEvent","clientSequence":2,"event":{"sequence":1,"senderPlayerId":1,"tickMarker":10,"payload":"AQ=="}}`)
 	ownerInbound1 := owner.readEvent(time.Second)
 	guestInbound1 := guest.readEvent(time.Second)
 	if ownerInbound1["kind"] != "inboundLinkEvent" || guestInbound1["kind"] != "inboundLinkEvent" {
@@ -209,14 +209,14 @@ func TestRelayE2EHandshakeRoomRebroadcastAndRejections(t *testing.T) {
 		t.Fatalf("expected serverSequence=1 on first rebroadcast, owner=%#v guest=%#v", ownerInbound1, guestInbound1)
 	}
 
-	guest.sendJSON(`{"intent":"publishLinkEvent","clientSequence":2,"event":{"sequence":1,"senderPlayerId":123,"tickMarker":11,"payload":"Ag=="}}`)
+	guest.sendJSON(`{"intent":"publishLinkEvent","clientSequence":2,"event":{"sequence":1,"senderPlayerId":2,"tickMarker":11,"payload":"Ag=="}}`)
 	ownerInbound2 := owner.readEvent(time.Second)
 	guestInbound2 := guest.readEvent(time.Second)
 	if int(ownerInbound2["serverSequence"].(float64)) != 2 || int(guestInbound2["serverSequence"].(float64)) != 2 {
 		t.Fatalf("expected serverSequence=2 on second rebroadcast, owner=%#v guest=%#v", ownerInbound2, guestInbound2)
 	}
 
-	owner.sendJSON(`{"intent":"publishLinkEvent","clientSequence":3,"event":{"sequence":1,"senderPlayerId":999,"tickMarker":12,"payload":"AQ=="}}`)
+	owner.sendJSON(`{"intent":"publishLinkEvent","clientSequence":3,"event":{"sequence":1,"senderPlayerId":1,"tickMarker":12,"payload":"AQ=="}}`)
 	assertKindCode(t, owner.readEvent(time.Second), "error", 409)
 	if disc := owner.readEvent(time.Second); disc["kind"] != "disconnected" || disc["reason"] != "protocolError" {
 		t.Fatalf("owner expected sequence violation disconnect, got %#v", disc)
