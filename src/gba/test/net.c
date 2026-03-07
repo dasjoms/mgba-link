@@ -135,7 +135,7 @@ M_TEST_DEFINE(finishMissingCommittedPayloadTriggersDeterministicSentinelAndError
 	net.normalData32 = 0xFFFFFFFF;
 
 	assert_int_equal(net.d.finishNormal32(&net.d), 0xFFFFFFFF);
-	assert_true(net.protocolError);
+	assert_false(net.protocolError);
 	assert_int_equal(net.state, GBA_SIO_NET_IN_ROOM);
 }
 
@@ -283,6 +283,50 @@ M_TEST_DEFINE(peerDetachDuringTransferTriggersDeterministicDegradePath) {
 	assert_int_equal(net.state, GBA_SIO_NET_DEGRADED);
 }
 
+
+M_TEST_DEFINE(repeatedLateMissesTransitionToPersistentDegradedPolicy) {
+	struct GBASIONetDriver net;
+	GBASIONetDriverCreate(&net);
+	net.state = GBA_SIO_NET_ACTIVE_TRANSFER;
+	net.transferArmed = true;
+	net.transferOrdinal = 1;
+	net.mode = GBA_SIO_NORMAL_8;
+
+	assert_int_equal(net.d.finishNormal8(&net.d), 0xFF);
+	assert_int_equal(net.latePolicyState, GBA_SIO_NET_LATE_MISSED_DEADLINE);
+	assert_int_equal(net.state, GBA_SIO_NET_IN_ROOM);
+
+	net.state = GBA_SIO_NET_ACTIVE_TRANSFER;
+	net.transferArmed = true;
+	net.transferOrdinal = 2;
+	assert_int_equal(net.d.finishNormal8(&net.d), 0xFF);
+	assert_int_equal(net.latePolicyState, GBA_SIO_NET_LATE_DEGRADED_PERSISTENT);
+	assert_int_equal(net.state, GBA_SIO_NET_DEGRADED);
+}
+
+M_TEST_DEFINE(sessionDisconnectMidTransferForcesDeterministicFallbackAndBlocksStart) {
+	struct GBASIONetDriver net;
+	struct TestQueue inbound;
+	_initQueue(&inbound);
+	GBASIONetDriverCreate(&net);
+	GBASIONetDriverSetQueues(&net, NULL, &inbound.queue);
+	net.state = GBA_SIO_NET_IN_ROOM;
+	net.localPlayerId = 1;
+	net.mode = GBA_SIO_NORMAL_32;
+	assert_false(net.d.start(&net.d));
+
+	struct GBASIONetEvent failure = {
+		.type = GBA_SIO_NET_EV_SESSION_FAILURE,
+		.sessionFailure = { .kind = GBA_SIO_NET_FAIL_DISCONNECTED, .code = 0 },
+	};
+	assert_true(inbound.queue.vtable->push(&inbound.queue, &failure));
+	assert_false(net.d.start(&net.d));
+	assert_int_equal(net.state, GBA_SIO_NET_DISCONNECTED);
+	assert_true(net.sessionDisconnected);
+	assert_int_equal(net.d.finishNormal32(&net.d), 0xFFFFFFFF);
+	assert_false(net.d.start(&net.d));
+}
+
 M_TEST_SUITE_DEFINE(GBANet,
 	cmocka_unit_test(setModeEnqueuesIntent),
 	cmocka_unit_test(startStallsUntilInboundResultThenFinishConsumes),
@@ -291,4 +335,6 @@ M_TEST_SUITE_DEFINE(GBANet,
 	cmocka_unit_test(peerAttachDetachUpdatesTopologyAndDeviceView),
 	cmocka_unit_test(saveStateLoadStateRoundTripDisconnected),
 	cmocka_unit_test(loadStateRejectsConnectedSessionByPolicy),
-	cmocka_unit_test(peerDetachDuringTransferTriggersDeterministicDegradePath))
+	cmocka_unit_test(peerDetachDuringTransferTriggersDeterministicDegradePath),
+	cmocka_unit_test(repeatedLateMissesTransitionToPersistentDegradedPolicy),
+	cmocka_unit_test(sessionDisconnectMidTransferForcesDeterministicFallbackAndBlocksStart))

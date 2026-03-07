@@ -26,6 +26,7 @@ public:
 	bool enqueueTransferResult(int senderPlayerId, int targetPlayerId, int64_t sequence, int32_t tickMarker, const QByteArray& payload);
 	bool enqueuePeerAttach(int playerId, int64_t sequence);
 	bool enqueuePeerDetach(int playerId, int64_t sequence);
+	bool enqueueSessionFailure(GBASIONetSessionFailureKind kind, int code, int64_t sequence);
 
 private:
 	struct Item {

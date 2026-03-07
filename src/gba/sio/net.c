@@ -57,6 +57,10 @@ static uint32_t GBASIONetDriverFinishNormal32(struct GBASIODriver* driver);
 
 static bool _isTopologyEvent(const struct GBASIONetEvent* event);
 static bool _applyTopologyEvent(struct GBASIONetDriver* net, const struct GBASIONetEvent* event);
+static void _transitionLatePolicyState(struct GBASIONetDriver* net, enum GBASIONetLatePacketPolicyState state);
+static void _applySessionFailure(struct GBASIONetDriver* net, const struct GBASIONetEvent* event);
+static void _markLateMiss(struct GBASIONetDriver* net, const char* message);
+static void _resetTransferDataToFallback(struct GBASIONetDriver* net);
 
 static size_t _expectedPayloadSize(enum GBASIOMode mode) {
 	switch (mode) {
@@ -75,6 +79,42 @@ static void _setProtocolError(struct GBASIONetDriver* net, const char* message) 
 	net->protocolError = true;
 	net->state = GBA_SIO_NET_DEGRADED;
 	mLOG(GBA_SIO, ERROR, "Net adapter protocol error: %s", message);
+}
+
+static void _transitionLatePolicyState(struct GBASIONetDriver* net, enum GBASIONetLatePacketPolicyState state) {
+	net->latePolicyState = state;
+	if (state == GBA_SIO_NET_LATE_DEGRADED_PERSISTENT) {
+		net->state = GBA_SIO_NET_DEGRADED;
+	}
+}
+
+static void _resetTransferDataToFallback(struct GBASIONetDriver* net) {
+	memset(net->multiplayerData, 0xFF, sizeof(net->multiplayerData));
+	net->normalData8 = 0xFF;
+	net->normalData32 = 0xFFFFFFFF;
+}
+
+static void _markLateMiss(struct GBASIONetDriver* net, const char* message) {
+	net->lateMissCount++;
+	_transitionLatePolicyState(net, GBA_SIO_NET_LATE_MISSED_DEADLINE);
+	if (net->lateMissCount >= net->lateMissThreshold) {
+		_transitionLatePolicyState(net, GBA_SIO_NET_LATE_DEGRADED_PERSISTENT);
+	}
+	mLOG(GBA_SIO, WARN, "Net adapter late packet miss: %s", message);
+}
+
+static void _applySessionFailure(struct GBASIONetDriver* net, const struct GBASIONetEvent* event) {
+	net->lastFailureKind = event->sessionFailure.kind;
+	net->lastFailureCode = event->sessionFailure.code;
+	net->sessionDisconnected = true;
+	net->protocolError = event->sessionFailure.kind == GBA_SIO_NET_FAIL_PROTOCOL
+		|| event->sessionFailure.kind == GBA_SIO_NET_FAIL_MALFORMED_MESSAGE;
+	net->state = net->protocolError ? GBA_SIO_NET_DEGRADED : GBA_SIO_NET_DISCONNECTED;
+	net->transferArmed = false;
+	net->committedTransferReady = false;
+	_resetTransferDataToFallback(net);
+	_transitionLatePolicyState(net, GBA_SIO_NET_LATE_MISSED_DEADLINE);
+	mLOG(GBA_SIO, WARN, "Net adapter session failure mapped kind=%u code=%d", event->sessionFailure.kind, event->sessionFailure.code);
 }
 
 static bool _pushOutboundIntent(struct GBASIONetDriver* net, const struct GBASIONetEvent* event) {
@@ -126,6 +166,10 @@ static bool _pollInboundForCurrentTransfer(struct GBASIONetDriver* net) {
 
 	struct GBASIONetEvent event;
 	while (GBASIONetEventQueueTryPop(net->inboundQueue, &event)) {
+		if (event.type == GBA_SIO_NET_EV_SESSION_FAILURE) {
+			_applySessionFailure(net, &event);
+			continue;
+		}
 		if (_isTopologyEvent(&event)) {
 			_applyTopologyEvent(net, &event);
 			continue;
@@ -136,7 +180,12 @@ static bool _pollInboundForCurrentTransfer(struct GBASIONetDriver* net) {
 		if (event.transferResult.playerId != net->localPlayerId) {
 			continue;
 		}
-		return _decodeTransferResult(net, &event);
+		if (_decodeTransferResult(net, &event)) {
+			net->lateMissCount = 0;
+			_transitionLatePolicyState(net, GBA_SIO_NET_LATE_ON_TIME);
+			return true;
+		}
+		return false;
 	}
 	return false;
 }
@@ -165,6 +214,9 @@ void GBASIONetDriverCreate(struct GBASIONetDriver* driver) {
 	driver->roomPlayerCount = 1;
 	driver->attachedPlayerMask = 0x1;
 	driver->nextOutboundSequence = 1;
+	driver->latePolicyState = GBA_SIO_NET_LATE_ON_TIME;
+	driver->lateMissThreshold = 2;
+	driver->lastFailureKind = 0;
 }
 
 void GBASIONetDriverSetQueues(struct GBASIONetDriver* driver, struct GBASIONetEventQueue* outboundQueue, struct GBASIONetEventQueue* inboundQueue) {
@@ -202,6 +254,12 @@ static void GBASIONetDriverReset(struct GBASIODriver* driver) {
 	net->protocolError = false;
 	net->transferOrdinal = 0;
 	net->nextOutboundSequence = 1;
+	net->latePolicyState = GBA_SIO_NET_LATE_ON_TIME;
+	net->lateMissCount = 0;
+	net->lateMissThreshold = 2;
+	net->sessionDisconnected = false;
+	net->lastFailureKind = 0;
+	net->lastFailureCode = 0;
 }
 
 static uint32_t GBASIONetDriverId(const struct GBASIODriver* driver) {
@@ -447,7 +505,7 @@ static uint16_t GBASIONetDriverWriteRCNT(struct GBASIODriver* driver, uint16_t v
 
 static bool GBASIONetDriverStart(struct GBASIODriver* driver) {
 	struct GBASIONetDriver* net = (struct GBASIONetDriver*) driver;
-	if (net->protocolError || net->state < GBA_SIO_NET_IN_ROOM) {
+	if (net->sessionDisconnected || net->protocolError || net->state < GBA_SIO_NET_IN_ROOM) {
 		return false;
 	}
 	if (!net->transferArmed) {
@@ -478,6 +536,7 @@ static bool GBASIONetDriverStart(struct GBASIODriver* driver) {
 	}
 
 	if (!_pollInboundForCurrentTransfer(net)) {
+		_transitionLatePolicyState(net, GBA_SIO_NET_LATE_WAITING_WITHIN_BUDGET);
 		if (net->state >= GBA_SIO_NET_IN_ROOM) {
 			net->state = GBA_SIO_NET_ACTIVE_TRANSFER;
 		}
@@ -493,7 +552,8 @@ static bool GBASIONetDriverStart(struct GBASIODriver* driver) {
 static void GBASIONetDriverFinishMultiplayer(struct GBASIODriver* driver, uint16_t data[4]) {
 	struct GBASIONetDriver* net = (struct GBASIONetDriver*) driver;
 	if (!net->committedTransferReady || net->committedTransferOrdinal != net->transferOrdinal) {
-		_setProtocolError(net, "missing committed multiplayer completion payload");
+		_markLateMiss(net, "missing committed multiplayer completion payload");
+		_resetTransferDataToFallback(net);
 	}
 	for (int i = 0; i < MAX_GBAS; ++i) {
 		data[i] = net->multiplayerData[i];
@@ -508,7 +568,8 @@ static void GBASIONetDriverFinishMultiplayer(struct GBASIODriver* driver, uint16
 static uint8_t GBASIONetDriverFinishNormal8(struct GBASIODriver* driver) {
 	struct GBASIONetDriver* net = (struct GBASIONetDriver*) driver;
 	if (!net->committedTransferReady || net->committedTransferOrdinal != net->transferOrdinal) {
-		_setProtocolError(net, "missing committed normal8 completion payload");
+		_markLateMiss(net, "missing committed normal8 completion payload");
+		net->normalData8 = 0xFF;
 	}
 	net->transferArmed = false;
 	net->committedTransferReady = false;
@@ -521,7 +582,8 @@ static uint8_t GBASIONetDriverFinishNormal8(struct GBASIODriver* driver) {
 static uint32_t GBASIONetDriverFinishNormal32(struct GBASIODriver* driver) {
 	struct GBASIONetDriver* net = (struct GBASIONetDriver*) driver;
 	if (!net->committedTransferReady || net->committedTransferOrdinal != net->transferOrdinal) {
-		_setProtocolError(net, "missing committed normal32 completion payload");
+		_markLateMiss(net, "missing committed normal32 completion payload");
+		net->normalData32 = 0xFFFFFFFF;
 	}
 	net->transferArmed = false;
 	net->committedTransferReady = false;

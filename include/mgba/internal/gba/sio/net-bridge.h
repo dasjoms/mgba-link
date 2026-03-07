@@ -23,6 +23,16 @@ enum GBASIONetEventType {
 	GBA_SIO_NET_EV_HARD_SYNC,
 	GBA_SIO_NET_EV_PEER_ATTACH,
 	GBA_SIO_NET_EV_PEER_DETACH,
+	GBA_SIO_NET_EV_SESSION_FAILURE,
+};
+
+enum GBASIONetSessionFailureKind {
+	GBA_SIO_NET_FAIL_CONNECTION = 1,
+	GBA_SIO_NET_FAIL_PROTOCOL = 2,
+	GBA_SIO_NET_FAIL_HEARTBEAT_TIMEOUT = 3,
+	GBA_SIO_NET_FAIL_ROOM_REJECTED = 4,
+	GBA_SIO_NET_FAIL_MALFORMED_MESSAGE = 5,
+	GBA_SIO_NET_FAIL_DISCONNECTED = 6,
 };
 
 struct GBASIONetModeSet {
@@ -51,6 +61,11 @@ struct GBASIONetPeerChange {
 	int playerId;
 };
 
+struct GBASIONetSessionFailure {
+	enum GBASIONetSessionFailureKind kind;
+	int code;
+};
+
 struct GBASIONetEvent {
 	enum GBASIONetEventType type;
 	int senderPlayerId;
@@ -62,6 +77,7 @@ struct GBASIONetEvent {
 		struct GBASIONetHardSync hardSync;
 		struct GBASIONetPeerChange peerAttach;
 		struct GBASIONetPeerChange peerDetach;
+		struct GBASIONetSessionFailure sessionFailure;
 	};
 };
 

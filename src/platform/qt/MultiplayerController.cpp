@@ -35,6 +35,23 @@ QString _categoryTag(QGBA::Netplay::NetplayErrorCategory category) {
 	return QString::fromLatin1(QGBA::Netplay::netplayErrorCategoryName(category));
 }
 
+
+GBASIONetSessionFailureKind _mapFailureKind(QGBA::Netplay::NetplayErrorCategory category) {
+	switch (category) {
+	case QGBA::Netplay::NetplayErrorCategory::ConnectionFailure:
+		return GBA_SIO_NET_FAIL_CONNECTION;
+	case QGBA::Netplay::NetplayErrorCategory::ProtocolMismatch:
+		return GBA_SIO_NET_FAIL_PROTOCOL;
+	case QGBA::Netplay::NetplayErrorCategory::HeartbeatTimeout:
+		return GBA_SIO_NET_FAIL_HEARTBEAT_TIMEOUT;
+	case QGBA::Netplay::NetplayErrorCategory::RoomRejectedOrFull:
+		return GBA_SIO_NET_FAIL_ROOM_REJECTED;
+	case QGBA::Netplay::NetplayErrorCategory::MalformedMessage:
+		return GBA_SIO_NET_FAIL_MALFORMED_MESSAGE;
+	}
+	return GBA_SIO_NET_FAIL_DISCONNECTED;
+}
+
 } // namespace
 
 QString MultiplayerController::RemoteSessionConfig::endpoint() const {
@@ -447,6 +464,9 @@ bool MultiplayerController::startConfiguredRemoteSession(std::unique_ptr<Netplay
 
 void MultiplayerController::onRemoteSessionStateChanged(Netplay::SessionState state) {
 	if (state == Netplay::SessionState::Disconnected || state == Netplay::SessionState::Error) {
+		if (isRemoteNetDriverActive() && m_remoteDriverBridge) {
+			m_remoteDriverBridge->enqueueSessionFailure(GBA_SIO_NET_FAIL_DISCONNECTED, 0, 0);
+		}
 		clearRemoteSessionBookkeeping();
 		return;
 	}
@@ -498,6 +518,9 @@ void MultiplayerController::onRemoteSessionProtocolError(const Netplay::SessionP
 			.arg(expectedSequence);
 	}
 
+	if (isRemoteNetDriverActive() && m_remoteDriverBridge) {
+		m_remoteDriverBridge->enqueueSessionFailure(_mapFailureKind(error.category), error.code, error.sequence);
+	}
 	clearRemoteSessionBookkeeping();
 }
 
