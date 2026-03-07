@@ -186,3 +186,259 @@ Interpretation tips:
 - Track `serverSequence` gaps or unexpected jumps to quickly identify ordering/desync faults between relay and client.
 - Compare `direction=out` `sequence` to matching server-side receipt logs to detect dropped or rejected intents.
 - Treat any token/auth/secret fields in `details` as redacted (`<redacted>`) by design when correlating auth failures.
+
+## Appendix A) Server implementation contract (client-internals independent)
+
+This appendix defines the minimum server-side behavior for v1 so a relay can be implemented without reading Qt client source.
+
+### A.1 Responsibilities by message kind
+
+Message routing and responsibilities are defined by top-level discriminator:
+
+- Client -> server: `intent`
+- Server -> client: `kind`
+
+#### A.1.1 Client intents (`intent`)
+
+1. `hello`
+   - Validate framing, JSON schema, and `protocolVersion`.
+   - Validate any authentication token, if required by deployment policy.
+   - On success, transition connection into authenticated/session-ready state.
+   - Emit either:
+     - success event(s) that establish identity/session (`playerAssigned` at minimum), or
+     - `error` then `disconnected` if rejected.
+
+2. `joinRoom`
+   - Validate room existence/creation policy and capacity.
+   - Attach connection to target room atomically.
+   - Assign/confirm room-local player slot before sending room-joined visibility events.
+   - Notify caller first (room membership success), then notify peers (`peerJoined`).
+
+3. `leaveRoom`
+   - Detach client from current room.
+   - Notify remaining peers that player left.
+   - If server policy closes idle rooms, close room and emit `disconnected`/room closure notices as needed.
+
+4. `publishLinkEvent`
+   - Validate envelope fields (`sequence`, `senderPlayerId`, payload presence/type).
+   - Enforce per-sender monotonic `LinkEventEnvelope.sequence`.
+   - Assign canonical room-wide `serverSequence` (see A.2).
+   - Rebroadcast to all intended recipients in canonical order.
+
+5. `heartbeat`
+   - Record liveness timestamp on receipt.
+   - Emit `heartbeatAck` promptly (see A.3).
+   - Do not mutate room ordering state except optional observability counters.
+
+6. `disconnect` (if used by deployment)
+   - Treat as graceful client-initiated disconnect.
+   - Emit peer leave notifications as applicable.
+   - Close TCP connection after flushing terminal events.
+
+#### A.1.2 Server events (`kind`)
+
+Server must produce consistent events with v1 semantics:
+
+- `playerAssigned`: confirms identity/slot for this connection.
+- `peerJoined`: announces a new room participant to existing peers.
+- `peerLeft`: announces participant departure.
+- `linkEvent`: rebroadcasted gameplay event with canonical `serverSequence`.
+- `heartbeatAck`: acknowledges most recent heartbeat handling.
+- `error`: machine-actionable failure with `code` + message.
+- `disconnected`: terminal reason before connection close whenever feasible.
+
+### A.2 Canonical rebroadcast ordering and `serverSequence`
+
+For each room, the server MUST maintain a single monotonic `serverSequence` counter:
+
+- Scope: per room.
+- Initial value: implementation-defined (`0` or `1` recommended), but stable within deployment.
+- Increment rule: increment exactly once per accepted `publishLinkEvent` before rebroadcast.
+
+Canonical processing algorithm:
+
+1. Accept inbound `publishLinkEvent` from an authenticated client in a joined room.
+2. Validate sender ordering (`event.sequence` strictly increasing for that sender connection/player).
+3. Atomically reserve next room `serverSequence` value.
+4. Attach reserved `serverSequence` to outbound `linkEvent`.
+5. Fan out to recipients preserving ascending `serverSequence` emission order.
+
+Non-negotiable ordering rules:
+
+- No two accepted link events in the same room may share a `serverSequence`.
+- Recipients must never observe decreasing `serverSequence` values.
+- On rejection/validation failure, no `serverSequence` is consumed.
+- Concurrent publishes must serialize at assignment point, not at socket-read order assumptions.
+
+### A.3 Heartbeat ACK timing and timeout semantics
+
+Heartbeat behavior is liveness-critical and should be deterministic:
+
+- ACK trigger: every valid inbound `heartbeat` intent receives one `heartbeatAck`.
+- ACK timing target: immediate on receive-path completion (recommended under 1 second).
+- ACK ordering: `heartbeatAck` must not overtake already-queued earlier `linkEvent` frames for that connection.
+
+Timeout semantics:
+
+- Server tracks last-received heartbeat timestamp per connection.
+- If no valid heartbeat (or any policy-accepted liveness traffic) is seen within server timeout window, server:
+  1. emits `error` with timeout code (when connection still writable),
+  2. emits `disconnected` with reason `"networkTimeout"`,
+  3. closes TCP connection.
+- Timeout duration is deployment-configurable, but all clients in a deployment should be held to the same default.
+
+### A.4 Error codes and required disconnect reasons
+
+Server error `code` values are numeric and stable. Recommended minimum v1 set:
+
+- `400` - malformed message/frame/schema (`MalformedMessage`).
+- `401` - authentication required/failed.
+- `403` - forbidden (room access denied / kicked policy).
+- `404` - room not found (when auto-create is disabled).
+- `409` - sequencing conflict (duplicate or out-of-order `clientSequence` or link `sequence`).
+- `413` - payload too large.
+- `426` - unsupported protocol version (`ProtocolMismatch`).
+- `429` - rate limited / too many requests.
+- `500` - internal server error.
+- `503` - temporary unavailable / server shutting down.
+
+Disconnect reasons the server must emit via `disconnected.reason` when applicable:
+
+- `"clientRequested"` for graceful client disconnect.
+- `"serverShutdown"` for planned server termination.
+- `"networkTimeout"` for heartbeat/liveness timeout.
+- `"protocolError"` for framing/schema/version/ordering violations causing disconnect.
+- `"roomClosed"` when room lifecycle ends session.
+- `"kicked"` for administrative/policy removal.
+
+Reason strings must match exactly to preserve enum mapping in clients (see section 6).
+
+### A.5 Example end-to-end transcript
+
+Illustrative sequence (JSON payloads only; each payload is carried in framed transport as defined in section 3):
+
+1) Client connects TCP
+
+2) Client -> Server (`hello`)
+
+```json
+{
+  "intent": "hello",
+  "protocolVersion": 1,
+  "clientSequence": 0,
+  "authToken": "token-abc"
+}
+```
+
+3) Server -> Client (`playerAssigned`)
+
+```json
+{
+  "kind": "playerAssigned",
+  "protocolVersion": 1,
+  "playerId": 2,
+  "displayName": "Player 3"
+}
+```
+
+4) Client -> Server (`joinRoom`)
+
+```json
+{
+  "intent": "joinRoom",
+  "clientSequence": 1,
+  "roomId": "room-42"
+}
+```
+
+5) Server -> Client (`roomJoined` style confirmation)
+
+```json
+{
+  "kind": "roomJoined",
+  "roomId": "room-42",
+  "memberCount": 2
+}
+```
+
+6) Server -> Client (`peerJoined` for another participant)
+
+```json
+{
+  "kind": "peerJoined",
+  "roomId": "room-42",
+  "playerId": 7,
+  "displayName": "Player 8"
+}
+```
+
+7) Client -> Server (`publishLinkEvent`)
+
+```json
+{
+  "intent": "publishLinkEvent",
+  "clientSequence": 2,
+  "event": {
+    "sequence": 15,
+    "senderPlayerId": 2,
+    "tickMarker": 123456,
+    "payload": "BASE64_BYTES"
+  }
+}
+```
+
+8) Server -> Room participants (`linkEvent` rebroadcast with canonical `serverSequence`)
+
+```json
+{
+  "kind": "linkEvent",
+  "roomId": "room-42",
+  "serverSequence": 98,
+  "event": {
+    "sequence": 15,
+    "senderPlayerId": 2,
+    "tickMarker": 123456,
+    "payload": "BASE64_BYTES"
+  }
+}
+```
+
+9) Client -> Server (`heartbeat`)
+
+```json
+{
+  "intent": "heartbeat",
+  "clientSequence": 3,
+  "timestampMs": 1735000000
+}
+```
+
+10) Server -> Client (`heartbeatAck`)
+
+```json
+{
+  "kind": "heartbeatAck",
+  "ackClientSequence": 3,
+  "serverTimeMs": 1735000005
+}
+```
+
+11) Client -> Server (`disconnect`)
+
+```json
+{
+  "intent": "disconnect",
+  "clientSequence": 4,
+  "reason": "clientRequested"
+}
+```
+
+12) Server -> Client (`disconnected`)
+
+```json
+{
+  "kind": "disconnected",
+  "reason": "clientRequested",
+  "message": "Client requested disconnect"
+}
+```
