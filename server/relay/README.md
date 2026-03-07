@@ -53,6 +53,15 @@ Transport uses 4-byte big-endian length-prefixed framing, followed by UTF-8 JSON
 - Hard protocol violations emit `error` and then `disconnected` before socket close.
 
 
+
+## Netplay validation scenarios
+
+Cross-environment validation scenarios (LAN/WAN/jitter, room-size coverage, disconnect handling, and savestate v1 behavior) are documented in:
+
+- `docs/netplay/validation-v1.md`
+
+For relay-focused runs, attach relay logs plus the scenario reporting fields from that document.
+
 ## Automated relay E2E coverage
 
 The relay includes TCP harness tests that boot a real listener and connect synthetic clients to validate:

@@ -50,3 +50,6 @@ Define a minimal, shippable networked link design that reuses existing mGBA link
 - `include/mgba/gba/interface.h`: `GBASIODriver` interface is the integration seam for transport-backed multiplayer link behavior.
 - `src/gba/sio/lockstep.c`: canonical lockstep timing/synchronization semantics to preserve over network transport.
 - `src/platform/qt/MultiplayerController.cpp`: current local multiplayer orchestration and player attachment flow to extend with network room/session flow.
+
+## Validation and operational guidance
+- Validation scenarios and pass/fail recording template: `docs/netplay/validation-v1.md`.
