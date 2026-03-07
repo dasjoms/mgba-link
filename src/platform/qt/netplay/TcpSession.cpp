@@ -111,6 +111,7 @@ TcpSession::TcpSession(QObject* parent)
 	QObject::connect(&m_socket, qOverload<QAbstractSocket::SocketError>(&QTcpSocket::errorOccurred), this, &TcpSession::_onSocketError);
 	QObject::connect(&m_heartbeatSendTimer, &QTimer::timeout, this, &TcpSession::_sendHeartbeat);
 	QObject::connect(&m_heartbeatWatchdogTimer, &QTimer::timeout, this, &TcpSession::_checkHeartbeatTimeout);
+	_wireAdapterCallbacks();
 }
 
 TcpSession::~TcpSession() {
@@ -131,6 +132,7 @@ SessionPeer TcpSession::localPeer() const {
 
 void TcpSession::setCallbacks(SessionCallbacks callbacks) {
 	m_callbacks = callbacks;
+	_wireAdapterCallbacks();
 }
 
 bool TcpSession::connect(const SessionConnectRequest& request) {
@@ -152,8 +154,7 @@ bool TcpSession::connect(const SessionConnectRequest& request) {
 	m_expectedServerSequence = -1;
 	m_nextSequence = 0;
 	m_heartbeatCounter = 0;
-	m_room = SessionRoom();
-	m_localPeer = SessionPeer();
+	_resetSessionState();
 	m_receiveBuffer.clear();
 
 	QString endpoint = request.endpoint.trimmed();
@@ -217,10 +218,9 @@ void TcpSession::disconnect() {
 	}
 
 	m_receiveBuffer.clear();
-	m_room = SessionRoom();
-	m_localPeer = SessionPeer();
 	m_handshakeCompleted = false;
 	m_expectedServerSequence = -1;
+	_resetSessionState();
 	_setState(SessionState::Disconnected);
 }
 
@@ -257,6 +257,7 @@ void TcpSession::leaveRoom() {
 	intent[QStringLiteral("roomId")] = m_room.roomId;
 	_sendIntent(intent);
 	m_room = SessionRoom();
+	m_localPeer = SessionPeer();
 	if (m_state != SessionState::Disconnected) {
 		_setState(SessionState::Connected);
 	}
@@ -267,7 +268,7 @@ bool TcpSession::sendEvent(const SessionEventEnvelope& event) {
 		_dispatchProtocolError(12, QStringLiteral("publishLinkEvent requires active room"), NetplayErrorCategory::ProtocolMismatch, -1, -1, QVariantMap(), QStringLiteral("out"), QStringLiteral("publishLinkEvent"));
 		return false;
 	}
-	if (m_localPeer.peerId.isEmpty()) {
+	if (m_messageAdapter.localPlayerId() < 0) {
 		_dispatchProtocolError(13, QStringLiteral("publishLinkEvent requires local player assignment"), NetplayErrorCategory::ProtocolMismatch, -1, -1, QVariantMap(), QStringLiteral("out"), QStringLiteral("publishLinkEvent"));
 		return false;
 	}
@@ -311,10 +312,9 @@ void TcpSession::_onDisconnected() {
 	m_heartbeatSendTimer.stop();
 	m_heartbeatWatchdogTimer.stop();
 	m_receiveBuffer.clear();
-	m_room = SessionRoom();
-	m_localPeer = SessionPeer();
 	m_handshakeCompleted = false;
 	m_expectedServerSequence = -1;
+	_resetSessionState();
 	if (m_state != SessionState::Error) {
 		_setState(SessionState::Disconnected);
 	}
@@ -463,8 +463,8 @@ void TcpSession::_handleFrame(const QByteArray& payload) {
 		return;
 	}
 
-	QVariantMap event = decoded.payload;
-	QString kind = decoded.kind;
+	const QVariantMap event = decoded.payload;
+	const QString kind = decoded.kind;
 	qint64 serverSequence = -1;
 	if (event.contains(QStringLiteral("serverSequence"))) {
 		bool ok = false;
@@ -486,86 +486,139 @@ void TcpSession::_handleFrame(const QByteArray& payload) {
 		return;
 	}
 
-	if (kind == QStringLiteral("roomJoined")) {
-		m_handshakeCompleted = true;
-		m_room.roomId = event.value(QStringLiteral("roomId")).toString();
-		m_room.roomName = event.value(QStringLiteral("roomName")).toString();
-		m_room.maxPeers = event.value(QStringLiteral("maxPlayers")).toInt();
-		_setState(SessionState::InRoom);
-		return;
-	}
-	if (kind == QStringLiteral("playerAssigned")) {
-		m_handshakeCompleted = true;
-		m_localPeer.peerId = QString::number(event.value(QStringLiteral("playerId")).toInt());
-		m_localPeer.displayName = event.value(QStringLiteral("displayName")).toString();
-		m_localPeer.isLocal = true;
-		return;
-	}
-	if (kind == QStringLiteral("peerJoined")) {
-		if (!_hasActiveRoom()) {
-			_dispatchProtocolError(19, QStringLiteral("peerJoined without active room"), NetplayErrorCategory::ProtocolMismatch, serverSequence, -1, event, QStringLiteral("in"), kind, serverSequence, QString::number(event.value(QStringLiteral("playerId")).toInt()));
-			return;
-		}
-		SessionPeer peer;
-		peer.peerId = QString::number(event.value(QStringLiteral("playerId")).toInt());
-		peer.displayName = event.value(QStringLiteral("displayName")).toString();
-		if (m_callbacks.onPeerJoined) {
-			m_callbacks.onPeerJoined(peer);
-		}
-		return;
-	}
-	if (kind == QStringLiteral("peerLeft")) {
-		SessionPeer peer;
-		peer.peerId = QString::number(event.value(QStringLiteral("playerId")).toInt());
-		peer.displayName = event.value(QStringLiteral("displayName")).toString();
-		if (m_callbacks.onPeerLeft) {
-			m_callbacks.onPeerLeft(peer);
-		}
-		return;
-	}
-	if (kind == QStringLiteral("inboundLinkEvent")) {
-		if (!_hasActiveRoom()) {
-			_dispatchProtocolError(20, QStringLiteral("inboundLinkEvent without active room"), NetplayErrorCategory::ProtocolMismatch, serverSequence, -1, event, QStringLiteral("in"), kind, serverSequence);
-			return;
-		}
-		SessionEventEnvelope envelope;
-		envelope.eventId = event.value(QStringLiteral("eventId")).toString();
-		envelope.sourcePeerId = event.value(QStringLiteral("sourcePeerId")).toString();
-		envelope.sequence = event.value(QStringLiteral("sequence")).toLongLong();
-		envelope.type = static_cast<SessionEventType>(event.value(QStringLiteral("type")).toInt());
-		envelope.payload = event.value(QStringLiteral("payload")).toByteArray();
-		envelope.sentAtUtc = QDateTime::fromMSecsSinceEpoch(event.value(QStringLiteral("sentAtUtcMs")).toLongLong(), Qt::UTC);
-		envelope.metadata = event.value(QStringLiteral("metadata")).toMap();
-		if (m_callbacks.onInboundLinkEvent) {
-			m_callbacks.onInboundLinkEvent(envelope);
-		}
-		return;
-	}
 	if (kind == QStringLiteral("heartbeatAck")) {
 		m_lastInboundHeartbeatMs = QDateTime::currentMSecsSinceEpoch();
 		return;
 	}
-	if (kind == QStringLiteral("error")) {
-		const int code = event.value(QStringLiteral("code")).toInt();
-		const QString message = event.value(QStringLiteral("message")).toString();
-		const QString lowerMessage = message.toLower();
-		NetplayErrorCategory category = NetplayErrorCategory::ProtocolMismatch;
-		if (code == 403 || code == 409 || code == 429
-				|| lowerMessage.contains(QStringLiteral("full"))
-				|| lowerMessage.contains(QStringLiteral("reject"))
-				|| lowerMessage.contains(QStringLiteral("denied"))) {
-			category = NetplayErrorCategory::RoomRejectedOrFull;
+
+	_routeDecodedServerEvent(kind, event, serverSequence);
+}
+
+void TcpSession::_wireAdapterCallbacks() {
+	SessionMessageAdapter::ControllerCallbacks adapterCallbacks;
+	adapterCallbacks.onRoomJoined = [this](const ServerRoomJoinedEvent& event) {
+		m_handshakeCompleted = true;
+		m_room.roomId = event.roomId;
+		m_room.roomName = event.roomName;
+		m_room.maxPeers = event.maxPlayers;
+		_setState(SessionState::InRoom);
+	};
+	adapterCallbacks.onPlayerAssigned = [this](const ServerPlayerAssignedEvent& event) {
+		m_handshakeCompleted = true;
+		m_localPeer.peerId = QString::number(event.playerId);
+		m_localPeer.displayName.clear();
+		m_localPeer.isLocal = true;
+	};
+	adapterCallbacks.onPeerJoined = [this](const ServerPeerJoinedEvent& event) {
+		SessionPeer peer;
+		peer.peerId = QString::number(event.playerId);
+		peer.displayName = event.displayName;
+		if (m_callbacks.onPeerJoined) {
+			m_callbacks.onPeerJoined(peer);
 		}
-		_dispatchProtocolError(code, message, category, serverSequence, -1, event, QStringLiteral("in"), kind, serverSequence);
+	};
+	adapterCallbacks.onPeerLeft = [this](const ServerPeerLeftEvent& event) {
+		SessionPeer peer;
+		peer.peerId = QString::number(event.playerId);
+		if (m_callbacks.onPeerLeft) {
+			m_callbacks.onPeerLeft(peer);
+		}
+		if (peer.peerId == m_localPeer.peerId) {
+			m_localPeer = SessionPeer();
+		}
+	};
+	adapterCallbacks.onLinkEvent = [this](const ServerInboundLinkEvent& event) {
+		SessionEventEnvelope envelope;
+		envelope.roomId = event.event.roomId;
+		envelope.sourcePeerId = QString::number(event.event.senderPlayerId);
+		envelope.sequence = event.event.sequence;
+		envelope.type = SessionEventType::LinkInput;
+		envelope.payload = event.event.payload;
+		envelope.sentAtUtc = QDateTime::fromMSecsSinceEpoch(event.event.tickMarker, Qt::UTC);
+		if (m_callbacks.onInboundLinkEvent) {
+			m_callbacks.onInboundLinkEvent(envelope);
+		}
+	};
+	adapterCallbacks.onDisconnected = [this](const ServerDisconnectedEvent& event) {
+		QVariantMap details;
+		details[QStringLiteral("reason")] = static_cast<int>(event.reason);
+		details[QStringLiteral("roomId")] = event.roomId;
+		details[QStringLiteral("message")] = event.message;
+		_dispatchProtocolError(8, event.message, NetplayErrorCategory::ConnectionFailure, -1, -1, details, QStringLiteral("in"), QStringLiteral("disconnected"));
+		disconnect();
+	};
+	adapterCallbacks.onProtocolError = [this](const SessionProtocolError& error) {
+		_dispatchProtocolError(error.code, error.message, error.category, error.sequence, error.expectedSequence, error.details, QStringLiteral("in"), QStringLiteral("adapter"));
+	};
+	m_messageAdapter.setControllerCallbacks(adapterCallbacks);
+}
+
+void TcpSession::_resetSessionState() {
+	m_room = SessionRoom();
+	m_localPeer = SessionPeer();
+	m_messageAdapter.resetState();
+}
+
+void TcpSession::_routeDecodedServerEvent(const QString& kind, const QVariantMap& event, qint64 serverSequence) {
+	if (kind == QStringLiteral("roomJoined")) {
+		ServerRoomJoinedEvent roomJoined;
+		roomJoined.roomId = event.value(QStringLiteral("roomId")).toString();
+		roomJoined.roomName = event.value(QStringLiteral("roomName")).toString();
+		roomJoined.maxPlayers = event.value(QStringLiteral("maxPlayers")).toInt();
+		m_messageAdapter.handleServerEvent(roomJoined);
+		return;
+	}
+	if (kind == QStringLiteral("playerAssigned")) {
+		ServerPlayerAssignedEvent assigned;
+		assigned.roomId = event.value(QStringLiteral("roomId")).toString();
+		assigned.playerId = event.value(QStringLiteral("playerId")).toInt();
+		m_messageAdapter.handleServerEvent(assigned);
+		return;
+	}
+	if (kind == QStringLiteral("peerJoined")) {
+		ServerPeerJoinedEvent joined;
+		joined.roomId = event.value(QStringLiteral("roomId")).toString();
+		joined.playerId = event.value(QStringLiteral("playerId")).toInt();
+		joined.displayName = event.value(QStringLiteral("displayName")).toString();
+		m_messageAdapter.handleServerEvent(joined);
+		return;
+	}
+	if (kind == QStringLiteral("peerLeft")) {
+		ServerPeerLeftEvent left;
+		left.roomId = event.value(QStringLiteral("roomId")).toString();
+		left.playerId = event.value(QStringLiteral("playerId")).toInt();
+		m_messageAdapter.handleServerEvent(left);
+		return;
+	}
+	if (kind == QStringLiteral("inboundLinkEvent")) {
+		ServerInboundLinkEvent inbound;
+		inbound.event.roomId = event.value(QStringLiteral("roomId")).toString();
+		bool senderOk = false;
+		inbound.event.senderPlayerId = event.value(QStringLiteral("sourcePeerId")).toString().toInt(&senderOk);
+		if (!senderOk) {
+			inbound.event.senderPlayerId = -1;
+		}
+		inbound.event.sequence = event.value(QStringLiteral("sequence")).toLongLong();
+		inbound.event.tickMarker = event.value(QStringLiteral("sentAtUtcMs")).toLongLong();
+		inbound.event.payload = event.value(QStringLiteral("payload")).toByteArray();
+		m_messageAdapter.handleServerEvent(inbound);
+		return;
+	}
+	if (kind == QStringLiteral("error")) {
+		ServerErrorEvent e;
+		e.roomId = event.value(QStringLiteral("roomId")).toString();
+		e.code = event.value(QStringLiteral("code")).toInt();
+		e.message = event.value(QStringLiteral("message")).toString();
+		m_messageAdapter.handleServerEvent(e);
 		_setState(SessionState::Error);
 		return;
 	}
 	if (kind == QStringLiteral("disconnected")) {
-		QVariantMap details = event;
-		details[QStringLiteral("reason")]
-			= static_cast<int>(_disconnectReasonFromString(event.value(QStringLiteral("reason")).toString()));
-		_dispatchProtocolError(8, event.value(QStringLiteral("message")).toString(), NetplayErrorCategory::ConnectionFailure, serverSequence, -1, details, QStringLiteral("in"), kind, serverSequence);
-		disconnect();
+		ServerDisconnectedEvent d;
+		d.roomId = event.value(QStringLiteral("roomId")).toString();
+		d.reason = _disconnectReasonFromString(event.value(QStringLiteral("reason")).toString());
+		d.message = event.value(QStringLiteral("message")).toString();
+		m_messageAdapter.handleServerEvent(d);
 		return;
 	}
 
