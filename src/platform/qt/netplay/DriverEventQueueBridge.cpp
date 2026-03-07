@@ -66,6 +66,10 @@ bool DriverEventQueueBridge::enqueuePeerDetach(int playerId, int64_t sequence) {
 }
 
 
+size_t DriverEventQueueBridge::pendingInboundDepth() const {
+	return size();
+}
+
 bool DriverEventQueueBridge::enqueueSessionFailure(GBASIONetSessionFailureKind kind, int code, int64_t sequence) {
 	GBASIONetEvent event = {
 		.type = GBA_SIO_NET_EV_SESSION_FAILURE,

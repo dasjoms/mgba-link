@@ -14,6 +14,8 @@
 #include <QLoggingCategory>
 #include <QRegularExpression>
 
+#include <cmath>
+
 namespace QGBA {
 namespace Netplay {
 
@@ -154,6 +156,9 @@ bool TcpSession::connect(const SessionConnectRequest& request) {
 	m_expectedServerSequence = -1;
 	m_nextSequence = 0;
 	m_heartbeatCounter = 0;
+	m_pendingHeartbeatSamples.clear();
+	m_lastRttSampleMs = -1;
+	m_rttJitterMs = 0.0;
 	_resetSessionState();
 	m_receiveBuffer.clear();
 
@@ -209,6 +214,7 @@ bool TcpSession::connect(const SessionConnectRequest& request) {
 void TcpSession::disconnect() {
 	m_heartbeatSendTimer.stop();
 	m_heartbeatWatchdogTimer.stop();
+	m_pendingHeartbeatSamples.clear();
 
 	if (m_socket.state() != QAbstractSocket::UnconnectedState) {
 		m_socket.disconnectFromHost();
@@ -311,6 +317,7 @@ void TcpSession::_onConnected() {
 void TcpSession::_onDisconnected() {
 	m_heartbeatSendTimer.stop();
 	m_heartbeatWatchdogTimer.stop();
+	m_pendingHeartbeatSamples.clear();
 	m_receiveBuffer.clear();
 	m_handshakeCompleted = false;
 	m_expectedServerSequence = -1;
@@ -342,7 +349,9 @@ void TcpSession::_sendHeartbeat() {
 
 	QVariantMap intent;
 	intent[QStringLiteral("intent")] = QStringLiteral("heartbeat");
-	intent[QStringLiteral("heartbeatCounter")] = m_heartbeatCounter++;
+	const qint64 heartbeatCounter = m_heartbeatCounter++;
+	intent[QStringLiteral("heartbeatCounter")] = heartbeatCounter;
+	m_pendingHeartbeatSamples.insert(heartbeatCounter, QDateTime::currentMSecsSinceEpoch());
 	_sendIntent(intent);
 }
 
@@ -477,7 +486,14 @@ void TcpSession::_handleFrame(const QByteArray& payload) {
 			_dispatchProtocolError(15, QStringLiteral("Unexpected server sequence"), NetplayErrorCategory::ProtocolMismatch, serverSequence, m_expectedServerSequence, event, QStringLiteral("in"), kind, serverSequence);
 			return;
 		}
-		m_expectedServerSequence = serverSequence + 1;
+		const qint64 nextExpectedServerSequence = serverSequence + 1;
+		qCDebug(netplayTcpSessionLog).noquote()
+			<< QStringLiteral("sequenceProgress roomId=%1 serverSequence=%2 nextExpectedServerSequence=%3 clientSequence=%4")
+				.arg(m_room.roomId.isEmpty() ? QStringLiteral("n/a") : m_room.roomId)
+				.arg(serverSequence)
+				.arg(nextExpectedServerSequence)
+				.arg(m_nextSequence);
+		m_expectedServerSequence = nextExpectedServerSequence;
 	}
 
 	if (!m_handshakeCompleted && kind != QStringLiteral("roomJoined") && kind != QStringLiteral("playerAssigned")
@@ -488,6 +504,22 @@ void TcpSession::_handleFrame(const QByteArray& payload) {
 
 	if (kind == QStringLiteral("heartbeatAck")) {
 		m_lastInboundHeartbeatMs = QDateTime::currentMSecsSinceEpoch();
+		const qint64 ackCounter = event.value(QStringLiteral("heartbeatCounter")).toLongLong();
+		if (m_pendingHeartbeatSamples.contains(ackCounter)) {
+			const qint64 sentAtMs = m_pendingHeartbeatSamples.take(ackCounter);
+			const qint64 rttSampleMs = qMax<qint64>(0, m_lastInboundHeartbeatMs - sentAtMs);
+			if (m_lastRttSampleMs >= 0) {
+				const qreal delta = qAbs(static_cast<qreal>(rttSampleMs - m_lastRttSampleMs));
+				m_rttJitterMs += (delta - m_rttJitterMs) / 16.0;
+			}
+			m_lastRttSampleMs = rttSampleMs;
+			qCDebug(netplayTcpSessionLog).noquote()
+				<< QStringLiteral("heartbeatHealth roomId=%1 heartbeatCounter=%2 rttMs=%3 jitterMs=%4")
+					.arg(m_room.roomId.isEmpty() ? QStringLiteral("n/a") : m_room.roomId)
+					.arg(ackCounter)
+					.arg(rttSampleMs)
+					.arg(QString::number(m_rttJitterMs, 'f', 2));
+		}
 		return;
 	}
 

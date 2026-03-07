@@ -5,6 +5,10 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 #include <mgba/internal/gba/sio/net.h>
 
+#include <mgba-util/hash.h>
+
+#include <stdlib.h>
+
 #define DRIVER_ID 0x2074654E
 #define DRIVER_STATE_VERSION 1
 
@@ -61,6 +65,7 @@ static void _transitionLatePolicyState(struct GBASIONetDriver* net, enum GBASION
 static void _applySessionFailure(struct GBASIONetDriver* net, const struct GBASIONetEvent* event);
 static void _markLateMiss(struct GBASIONetDriver* net, const char* message);
 static void _resetTransferDataToFallback(struct GBASIONetDriver* net);
+static void _maybeCheckpointLinkState(struct GBASIONetDriver* net, const char* boundary);
 
 static size_t _expectedPayloadSize(enum GBASIOMode mode) {
 	switch (mode) {
@@ -73,6 +78,55 @@ static size_t _expectedPayloadSize(enum GBASIOMode mode) {
 	default:
 		return 0;
 	}
+}
+
+
+static uint32_t _linkVisibleStateHash(const struct GBASIONetDriver* net) {
+	uint32_t hash = 0;
+	hash = hash32(&net->mode, sizeof(net->mode), hash);
+	hash = hash32(&net->roomPlayerCount, sizeof(net->roomPlayerCount), hash);
+	hash = hash32(&net->localPlayerId, sizeof(net->localPlayerId), hash);
+	hash = hash32(&net->attachedPlayerMask, sizeof(net->attachedPlayerMask), hash);
+	hash = hash32(&net->lastSIOCNT, sizeof(net->lastSIOCNT), hash);
+	hash = hash32(&net->lastRCNT, sizeof(net->lastRCNT), hash);
+	hash = hash32(&net->multiplayerData, sizeof(net->multiplayerData), hash);
+	hash = hash32(&net->normalData8, sizeof(net->normalData8), hash);
+	hash = hash32(&net->normalData32, sizeof(net->normalData32), hash);
+	return hash;
+}
+
+static void _maybeCheckpointLinkState(struct GBASIONetDriver* net, const char* boundary) {
+	if (!net->checkpointInterval || (net->transferOrdinal % net->checkpointInterval) != 0) {
+		return;
+	}
+	uint32_t checkpointHash = _linkVisibleStateHash(net);
+	if (net->lastCheckpointOrdinal > net->transferOrdinal) {
+		mLOG(GBA_SIO, WARN,
+			"Net checkpoint mismatch event=desync boundary=%s ordinal=%u previousOrdinal=%u previousHash=%08X currentHash=%08X localPlayer=%d mode=%d roomPlayers=%d attachedMask=%02X",
+			boundary,
+			net->transferOrdinal,
+			net->lastCheckpointOrdinal,
+			net->lastCheckpointHash,
+			checkpointHash,
+			net->localPlayerId,
+			net->mode,
+			net->roomPlayerCount,
+			net->attachedPlayerMask);
+	}
+	if (net->lastCheckpointOrdinal == net->transferOrdinal && net->lastCheckpointHash != checkpointHash) {
+		mLOG(GBA_SIO, WARN,
+			"Net checkpoint mismatch event=desync boundary=%s ordinal=%u previousHash=%08X currentHash=%08X localPlayer=%d mode=%d roomPlayers=%d attachedMask=%02X",
+			boundary,
+			net->transferOrdinal,
+			net->lastCheckpointHash,
+			checkpointHash,
+			net->localPlayerId,
+			net->mode,
+			net->roomPlayerCount,
+			net->attachedPlayerMask);
+	}
+	net->lastCheckpointOrdinal = net->transferOrdinal;
+	net->lastCheckpointHash = checkpointHash;
 }
 
 static void _setProtocolError(struct GBASIONetDriver* net, const char* message) {
@@ -247,6 +301,17 @@ void GBASIONetDriverCreate(struct GBASIONetDriver* driver) {
 	driver->latePolicyState = GBA_SIO_NET_LATE_ON_TIME;
 	driver->lateMissThreshold = 2;
 	driver->lastFailureKind = 0;
+	driver->checkpointInterval = 0;
+	const char* checkpointIntervalValue = getenv("MGBA_NET_CHECKPOINT_INTERVAL");
+	if (checkpointIntervalValue) {
+		char* end = NULL;
+		unsigned long parsed = strtoul(checkpointIntervalValue, &end, 10);
+		if (end != checkpointIntervalValue && parsed > 0 && parsed <= UINT32_MAX) {
+			driver->checkpointInterval = (uint32_t) parsed;
+		}
+	}
+	driver->lastCheckpointOrdinal = 0;
+	driver->lastCheckpointHash = 0;
 }
 
 void GBASIONetDriverSetQueues(struct GBASIONetDriver* driver, struct GBASIONetEventQueue* outboundQueue, struct GBASIONetEventQueue* inboundQueue) {
@@ -290,6 +355,8 @@ static void GBASIONetDriverReset(struct GBASIODriver* driver) {
 	net->sessionDisconnected = false;
 	net->lastFailureKind = 0;
 	net->lastFailureCode = 0;
+	net->lastCheckpointOrdinal = 0;
+	net->lastCheckpointHash = 0;
 }
 
 static uint32_t GBASIONetDriverId(const struct GBASIODriver* driver) {
@@ -595,6 +662,7 @@ static void GBASIONetDriverFinishMultiplayer(struct GBASIODriver* driver, uint16
 	if (net->state == GBA_SIO_NET_ACTIVE_TRANSFER) {
 		net->state = GBA_SIO_NET_IN_ROOM;
 	}
+	_maybeCheckpointLinkState(net, "finishMultiplayer");
 }
 
 static uint8_t GBASIONetDriverFinishNormal8(struct GBASIODriver* driver) {
@@ -608,6 +676,7 @@ static uint8_t GBASIONetDriverFinishNormal8(struct GBASIODriver* driver) {
 	if (net->state == GBA_SIO_NET_ACTIVE_TRANSFER) {
 		net->state = GBA_SIO_NET_IN_ROOM;
 	}
+	_maybeCheckpointLinkState(net, "finishNormal8");
 	return net->normalData8;
 }
 
@@ -622,5 +691,6 @@ static uint32_t GBASIONetDriverFinishNormal32(struct GBASIODriver* driver) {
 	if (net->state == GBA_SIO_NET_ACTIVE_TRANSFER) {
 		net->state = GBA_SIO_NET_IN_ROOM;
 	}
+	_maybeCheckpointLinkState(net, "finishNormal32");
 	return net->normalData32;
 }
