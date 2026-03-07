@@ -7,7 +7,7 @@ A lightweight TCP relay service for link-session traffic.
 - `main.go`: service entrypoint.
 - `config/`: CLI and environment-driven configuration loading.
 - `logging/`: logger construction.
-- `protocol/`: newline-delimited JSON protocol primitives.
+- `protocol/`: framed transport and protocol validation primitives.
 - `rooms/`: room/session management.
 - `transport/`: TCP listener and connection handlers.
 
@@ -46,22 +46,8 @@ All options can be provided either by CLI flag or environment variable.
 
 ## Protocol sketch
 
-Line-delimited JSON messages:
+Transport uses 4-byte big-endian length-prefixed framing, followed by UTF-8 JSON payload bytes.
 
-- Client joins:
-
-```json
-{"type":"join","roomId":"abc","player":"p1","secret":"my-secret"}
-```
-
-- Client payload:
-
-```json
-{"type":"message","payload":{"frame":1234,"data":"..."}}
-```
-
-- Heartbeat reply:
-
-```json
-{"type":"pong"}
-```
+- Client -> server uses top-level discriminator `intent` (`hello`, `createRoom`, `joinRoom`, `leaveRoom`, `heartbeat`, `publishLinkEvent`).
+- Server -> client uses top-level discriminator `kind` (`playerAssigned`, `roomJoined`, `inboundLinkEvent`, `heartbeatAck`, `error`, `disconnected`).
+- Hard protocol violations emit `error` and then `disconnected` before socket close.
