@@ -548,6 +548,7 @@ bool MultiplayerController::startRemoteSession(std::unique_ptr<Netplay::Session>
 	m_remoteDriverBridge.reset(new Netplay::DriverEventQueueBridge());
 	startRemoteDriverDispatcher();
 	refreshRemoteSessionBookkeepingFromSession();
+	emit remoteSessionStatusChanged();
 	return true;
 }
 
@@ -560,6 +561,7 @@ void MultiplayerController::stopRemoteSession() {
 	m_remoteSession.reset();
 	m_remoteDriverBridge.reset();
 	clearRemoteSessionBookkeeping();
+	emit remoteSessionStatusChanged();
 }
 
 bool MultiplayerController::isRemoteSessionActive() const {
@@ -641,6 +643,7 @@ void MultiplayerController::onRemoteSessionStateChanged(Netplay::SessionState st
 			m_remoteDriverBridge->enqueueSessionFailure(GBA_SIO_NET_FAIL_DISCONNECTED, 0, 0);
 		}
 		clearRemoteSessionBookkeeping();
+		emit remoteSessionStatusChanged();
 		return;
 	}
 
@@ -649,6 +652,7 @@ void MultiplayerController::onRemoteSessionStateChanged(Netplay::SessionState st
 	}
 
 	refreshRemoteSessionBookkeepingFromSession();
+	emit remoteSessionStatusChanged();
 }
 
 
@@ -698,6 +702,7 @@ void MultiplayerController::onRemoteSessionPeerJoined(const Netplay::SessionPeer
 		}
 	}
 	refreshRemoteSessionBookkeepingFromSession();
+	emit remoteSessionStatusChanged();
 }
 
 void MultiplayerController::onRemoteSessionPeerLeft(const Netplay::SessionPeer& peer) {
@@ -708,6 +713,7 @@ void MultiplayerController::onRemoteSessionPeerLeft(const Netplay::SessionPeer& 
 		}
 	}
 	refreshRemoteSessionBookkeepingFromSession();
+	emit remoteSessionStatusChanged();
 }
 
 void MultiplayerController::onRemoteSessionProtocolError(const Netplay::SessionProtocolError& error) {
@@ -744,6 +750,7 @@ void MultiplayerController::onRemoteSessionProtocolError(const Netplay::SessionP
 			.arg(static_cast<qulonglong>(m_remoteDriverBridge->pendingInboundDepth()));
 	}
 	clearRemoteSessionBookkeeping();
+	emit remoteSessionStatusChanged();
 }
 
 void MultiplayerController::onRemoteSessionInboundLinkEvent(const Netplay::SessionEventEnvelope& event) {
@@ -859,6 +866,7 @@ void MultiplayerController::stopRemoteDriverDispatcher() {
 void MultiplayerController::refreshRemoteSessionBookkeepingFromSession() {
 	if (!m_remoteSession) {
 		clearRemoteSessionBookkeeping();
+		emit remoteSessionStatusChanged();
 		return;
 	}
 	const Netplay::SessionRoom room = m_remoteSession->room();

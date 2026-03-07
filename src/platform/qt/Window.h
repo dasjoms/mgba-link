@@ -37,10 +37,12 @@ class DebuggerConsoleController;
 class Display;
 class DolphinConnector;
 class FrameView;
+class QLabel;
 class GDBController;
 class GIFView;
 class LibraryController;
 class LogView;
+class MultiplayerController;
 class OverrideView;
 class SensorView;
 class ShaderSelector;
@@ -177,6 +179,8 @@ private:
 	void setupOptions();
 	void openStateWindow(LoadSave);
 	void configureAndStartRemoteSession(bool createRoom);
+	void refreshMultiplayerStatusDisplay();
+	QString multiplayerStatusText(const MultiplayerController* multiplayer) const;
 	MultiplayerController* multiplayerControllerForNetplayUi(bool requireController = true) const;
 
 	void attachWidget(QWidget* widget);
@@ -278,6 +282,7 @@ private:
 #endif
 
 	std::unique_ptr<QGBA::Display> m_cleanupDisplay;
+	QLabel* m_multiplayerStatusLabel = nullptr;
 	std::shared_ptr<CoreController> m_cleanupController;
 };
 

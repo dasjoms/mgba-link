@@ -8,6 +8,7 @@
 #include <QAbstractButton>
 #include <QKeyEvent>
 #include <QKeySequence>
+#include <QLabel>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QFormLayout>
@@ -17,6 +18,7 @@
 #include <QMimeData>
 #include <QPainter>
 #include <QSpinBox>
+#include <QStatusBar>
 #include <QScreen>
 #include <QWindow>
 
@@ -205,6 +207,10 @@ Window::Window(CoreManager* manager, ConfigController* config, int playerId, QWi
 	connect(this, &QWidget::customContextMenuRequested, [this](const QPoint& pos) {
 		m_actions.exec(mapToGlobal(pos));
 	});
+
+	m_multiplayerStatusLabel = new QLabel(this);
+	statusBar()->addPermanentWidget(m_multiplayerStatusLabel, 1);
+	refreshMultiplayerStatusDisplay();
 }
 
 Window::~Window() {
@@ -289,6 +295,7 @@ void Window::resizeFrame(const QSize& size) {
 void Window::updateMultiplayerStatus(bool canOpenAnother) {
 	m_multiWindow->setEnabled(canOpenAnother);
 	multiplayerChanged();
+	refreshMultiplayerStatusDisplay();
 }
 
 void Window::updateMultiplayerActive(bool active) {
@@ -449,6 +456,38 @@ void Window::multiplayerChanged() {
 	}
 }
 
+QString Window::multiplayerStatusText(const MultiplayerController* multiplayer) const {
+	if (!multiplayer) {
+		return tr("Multiplayer: local only");
+	}
+
+	if (multiplayer->isRemoteSessionActive()) {
+		const MultiplayerController::RemoteSessionConfig& config = multiplayer->remoteSessionConfig();
+		const QString roomId = !config.room.isEmpty() ? config.room : tr("(pending)");
+		const int remoteCount = multiplayer->remotePlayerCount() > 0 ? multiplayer->remotePlayerCount() : 1;
+		const int you = multiplayer->remotePlayerId();
+		const QString youText = you >= 0 ? tr("P%1").arg(you + 1) : tr("pending");
+		return tr("Remote room: %1 | Players: %2/4 | You: %3")
+			.arg(roomId)
+			.arg(remoteCount)
+			.arg(youText);
+	}
+
+	const int localPlayers = multiplayer->attached();
+	if (localPlayers > 1) {
+		return tr("Multiplayer: local only | Players: %1/4").arg(localPlayers);
+	}
+	return tr("Multiplayer: local only");
+}
+
+void Window::refreshMultiplayerStatusDisplay() {
+	if (!m_multiplayerStatusLabel) {
+		return;
+	}
+	MultiplayerController* multiplayer = m_controller ? m_controller->multiplayerController() : nullptr;
+	m_multiplayerStatusLabel->setText(multiplayerStatusText(multiplayer));
+}
+
 MultiplayerController* Window::multiplayerControllerForNetplayUi(bool requireController) const {
 	if (requireController && !m_controller) {
 		QMessageBox::information(const_cast<Window*>(this), tr("No game loaded"), tr("Load a game before using remote relay multiplayer."));
@@ -527,6 +566,8 @@ void Window::configureAndStartRemoteSession(bool createRoom) {
 		return;
 	}
 
+	refreshMultiplayerStatusDisplay();
+
 	QMessageBox::information(this, tr("Remote relay"), createRoom
 		? tr("Remote relay room creation requested.")
 		: tr("Remote relay room join requested."));
@@ -546,6 +587,7 @@ void Window::disconnectRemoteRelay() {
 		return;
 	}
 	multiplayer->stopRemoteSession();
+	refreshMultiplayerStatusDisplay();
 }
 
 void Window::selectPatch() {
@@ -1138,6 +1180,7 @@ void Window::gameStopped() {
 #endif
 
 	emit paused(false);
+	refreshMultiplayerStatusDisplay();
 }
 
 void Window::gameCrashed(const QString& errorMessage) {
@@ -2358,6 +2401,12 @@ void Window::setController(CoreController* controller, const QString& fname) {
 	connect(m_controller.get(), &CoreController::failed, this, &Window::gameFailed);
 	connect(m_controller.get(), &CoreController::unimplementedBiosCall, this, &Window::unimplementedBiosCall);
 
+	if (MultiplayerController* multiplayer = m_controller->multiplayerController()) {
+		connect(multiplayer, &MultiplayerController::gameAttached, this, &Window::refreshMultiplayerStatusDisplay);
+		connect(multiplayer, &MultiplayerController::gameDetached, this, &Window::refreshMultiplayerStatusDisplay);
+		connect(multiplayer, &MultiplayerController::remoteSessionStatusChanged, this, &Window::refreshMultiplayerStatusDisplay);
+	}
+
 #ifdef M_CORE_GBA
 	if (m_controller->platform() == mPLATFORM_GBA) {
 		QVariant mb = m_config->takeArgvOption(QString("mb"));
@@ -2430,6 +2479,8 @@ void Window::setController(CoreController* controller, const QString& fname) {
 		m_controller->setPaused(true);
 		m_pendingPause = false;
 	}
+
+	refreshMultiplayerStatusDisplay();
 
 #ifdef ENABLE_SCRIPTING
 	if (!m_scripting) {
