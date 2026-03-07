@@ -128,3 +128,18 @@ The adapter MUST enforce all of the following:
 - Deterministic ordering guarantees are explicit in §4.
 - Late-packet/disconnect states are explicit in §5.
 - Explicit block/stall vs error matrix is defined in §6.
+
+---
+
+## 8) Savestate compatibility policy (v1)
+
+`GBASIODriver::saveState/loadState` blobs for the network adapter MUST include both a `driverId` and `version` header before driver fields.
+
+### v1 connected-session rule
+
+To preserve deterministic ordering guarantees, v1 explicitly forbids loading a netplay savestate while either:
+
+- the current adapter instance is already connected (`InRoom` or later), or
+- the serialized blob reports a connected/degraded net state.
+
+When this rule is hit, `loadState` MUST reject with `false` and emit a clear warning ("Refusing to load net savestate while connected (v1 policy)").

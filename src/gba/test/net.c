@@ -189,6 +189,75 @@ M_TEST_DEFINE(peerAttachDetachUpdatesTopologyAndDeviceView) {
 	assert_false(net.protocolError);
 }
 
+
+M_TEST_DEFINE(saveStateLoadStateRoundTripDisconnected) {
+	struct GBASIONetDriver source;
+	struct GBASIONetDriver dest;
+	void* blob = NULL;
+	size_t blobSize = 0;
+	GBASIONetDriverCreate(&source);
+	GBASIONetDriverCreate(&dest);
+
+	source.state = GBA_SIO_NET_DISCONNECTED;
+	source.mode = GBA_SIO_MULTI;
+	source.roomPlayerCount = 3;
+	source.localPlayerId = 2;
+	source.attachedPlayerMask = 0x7;
+	source.lastSIOCNT = 0x1234;
+	source.lastRCNT = 0x5678;
+	source.multiplayerData[0] = 0xAAAA;
+	source.multiplayerData[1] = 0xBBBB;
+	source.multiplayerData[2] = 0xCCCC;
+	source.multiplayerData[3] = 0xDDDD;
+	source.normalData8 = 0x4D;
+	source.normalData32 = 0x89ABCDEF;
+	source.transferArmed = true;
+	source.transferOrdinal = 41;
+	source.committedTransferOrdinal = 41;
+	source.nextOutboundSequence = 12345;
+
+	source.d.saveState(&source.d, &blob, &blobSize);
+	assert_non_null(blob);
+	assert_int_equal(blobSize, 0x40);
+	assert_true(dest.d.loadState(&dest.d, blob, blobSize));
+	free(blob);
+
+	assert_int_equal(dest.state, GBA_SIO_NET_DISCONNECTED);
+	assert_int_equal(dest.mode, GBA_SIO_MULTI);
+	assert_int_equal(dest.roomPlayerCount, 3);
+	assert_int_equal(dest.localPlayerId, 2);
+	assert_int_equal(dest.attachedPlayerMask, 0x7);
+	assert_int_equal(dest.lastSIOCNT, 0x1234);
+	assert_int_equal(dest.lastRCNT, 0x5678);
+	assert_int_equal(dest.multiplayerData[0], 0xAAAA);
+	assert_int_equal(dest.multiplayerData[1], 0xBBBB);
+	assert_int_equal(dest.multiplayerData[2], 0xCCCC);
+	assert_int_equal(dest.multiplayerData[3], 0xDDDD);
+	assert_int_equal(dest.normalData8, 0x4D);
+	assert_int_equal(dest.normalData32, 0x89ABCDEF);
+	assert_true(dest.transferArmed);
+	assert_int_equal(dest.transferOrdinal, 41);
+	assert_int_equal(dest.committedTransferOrdinal, 41);
+	assert_true(dest.committedTransferReady);
+	assert_int_equal(dest.nextOutboundSequence, 12345);
+}
+
+M_TEST_DEFINE(loadStateRejectsConnectedSessionByPolicy) {
+	struct GBASIONetDriver source;
+	struct GBASIONetDriver dest;
+	void* blob = NULL;
+	size_t blobSize = 0;
+	GBASIONetDriverCreate(&source);
+	GBASIONetDriverCreate(&dest);
+
+	source.state = GBA_SIO_NET_IN_ROOM;
+	source.d.saveState(&source.d, &blob, &blobSize);
+	assert_non_null(blob);
+
+	dest.state = GBA_SIO_NET_IN_ROOM;
+	assert_false(dest.d.loadState(&dest.d, blob, blobSize));
+	free(blob);
+}
 M_TEST_DEFINE(peerDetachDuringTransferTriggersDeterministicDegradePath) {
 	struct GBASIONetDriver net;
 	struct TestQueue inbound;
@@ -220,4 +289,6 @@ M_TEST_SUITE_DEFINE(GBANet,
 	cmocka_unit_test(finishMissingCommittedPayloadTriggersDeterministicSentinelAndError),
 	cmocka_unit_test(reentrantStartWithoutCompletionPredictablyStalls),
 	cmocka_unit_test(peerAttachDetachUpdatesTopologyAndDeviceView),
+	cmocka_unit_test(saveStateLoadStateRoundTripDisconnected),
+	cmocka_unit_test(loadStateRejectsConnectedSessionByPolicy),
 	cmocka_unit_test(peerDetachDuringTransferTriggersDeterministicDegradePath))
