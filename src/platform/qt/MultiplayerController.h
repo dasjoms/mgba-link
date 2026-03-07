@@ -82,6 +82,7 @@ signals:
 	void gameAttached();
 	void gameDetached();
 	void remoteSessionStatusChanged();
+	void remoteSessionFailureNotified(const QString& state, const QString& userMessage, int code, const QString& category, bool terminal);
 
 private:
 	union Node {
@@ -168,6 +169,7 @@ private:
 	std::unique_ptr<Netplay::DriverEventQueueBridge> m_remoteDriverBridge;
 	std::atomic<bool> m_remoteDriverDispatchStop = false;
 	std::thread m_remoteDriverDispatchThread;
+	bool m_remoteFailureNotified = false;
 };
 
 }

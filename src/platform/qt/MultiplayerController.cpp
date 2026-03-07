@@ -179,31 +179,36 @@ GBASIONetSessionFailureKind _mapFailureKind(QGBA::Netplay::NetplayErrorCategory 
 }
 
 
-QString _uiRemoteStateMessage(const QGBA::Netplay::SessionProtocolError& error) {
+struct RemoteUiFailureMessage {
+	QString state;
+	QString userMessage;
+};
+
+RemoteUiFailureMessage _mapRemoteUiFailureMessage(const QGBA::Netplay::SessionProtocolError& error) {
 	const int code = error.code;
 	switch (error.category) {
 	case QGBA::Netplay::NetplayErrorCategory::ProtocolMismatch:
-		return QObject::tr("Remote netplay protocol mismatch. Please verify client/server versions.");
+	case QGBA::Netplay::NetplayErrorCategory::MalformedMessage:
+		return {QObject::tr("protocol mismatch"), QObject::tr("Remote netplay protocol mismatch. Please verify client/server versions.")};
 	case QGBA::Netplay::NetplayErrorCategory::RoomRejectedOrFull:
-		return QObject::tr("Remote room is full or join was rejected.");
+		return {QObject::tr("room full"), QObject::tr("Remote room is full or join was rejected.")};
 	case QGBA::Netplay::NetplayErrorCategory::HeartbeatTimeout:
-		return QObject::tr("Timed out while waiting for peers.");
+		return {QObject::tr("timeout"), QObject::tr("Timed out while waiting for peers.")};
 	case QGBA::Netplay::NetplayErrorCategory::ConnectionFailure:
 		if (code == 409 || code == 426) {
-			return QObject::tr("Remote netplay protocol mismatch. Please verify client/server versions.");
+			return {QObject::tr("protocol mismatch"), QObject::tr("Remote netplay protocol mismatch. Please verify client/server versions.")};
 		}
 		if (code == 403 || code == 404) {
-			return QObject::tr("Remote room is full or join was rejected.");
+			return {QObject::tr("room full"), QObject::tr("Remote room is full or join was rejected.")};
 		}
 		if (code == 408 || code >= 400000) {
-			return QObject::tr("Timed out while waiting for peers.");
+			return {QObject::tr("timeout"), QObject::tr("Timed out while waiting for peers.")};
 		}
-		return QObject::tr("Remote netplay connection lost.");
-	case QGBA::Netplay::NetplayErrorCategory::MalformedMessage:
-		return QObject::tr("Remote netplay protocol mismatch. Please verify client/server versions.");
+		return {QObject::tr("connection lost"), QObject::tr("Remote netplay connection lost.")};
 	}
-	return QObject::tr("Remote netplay connection lost.");
+	return {QObject::tr("connection lost"), QObject::tr("Remote netplay connection lost.")};
 }
+
 
 GBASIONetSessionFailureKind _mapFailureKindFromError(const QGBA::Netplay::SessionProtocolError& error) {
 	if (error.category == QGBA::Netplay::NetplayErrorCategory::ProtocolMismatch || error.category == QGBA::Netplay::NetplayErrorCategory::MalformedMessage || error.code == 409 || error.code == 426) {
@@ -526,6 +531,7 @@ bool MultiplayerController::startRemoteSession(std::unique_ptr<Netplay::Session>
 		return false;
 	}
 	clearRemoteSessionBookkeeping();
+	m_remoteFailureNotified = false;
 	m_remoteSession = std::move(session);
 
 	Netplay::SessionCallbacks callbacks;
@@ -560,6 +566,7 @@ void MultiplayerController::stopRemoteSession() {
 	m_remoteSession->disconnect();
 	m_remoteSession.reset();
 	m_remoteDriverBridge.reset();
+	m_remoteFailureNotified = false;
 	clearRemoteSessionBookkeeping();
 	emit remoteSessionStatusChanged();
 }
@@ -642,8 +649,19 @@ void MultiplayerController::onRemoteSessionStateChanged(Netplay::SessionState st
 		if (isRemoteNetDriverActive() && m_remoteDriverBridge) {
 			m_remoteDriverBridge->enqueueSessionFailure(GBA_SIO_NET_FAIL_DISCONNECTED, 0, 0);
 		}
-		clearRemoteSessionBookkeeping();
-		emit remoteSessionStatusChanged();
+		if (!m_remoteFailureNotified) {
+			Netplay::SessionProtocolError error;
+			error.category = Netplay::NetplayErrorCategory::ConnectionFailure;
+			error.layer = Netplay::NetplayFailureLayer::ControllerIntegration;
+			error.message = QStringLiteral("Remote session disconnected");
+			error.endpoint = m_remoteSessionConfig.endpoint();
+			error.roomId = m_remoteSessionConfig.room;
+			onRemoteSessionProtocolError(error);
+			m_remoteFailureNotified = true;
+		} else {
+			clearRemoteSessionBookkeeping();
+			emit remoteSessionStatusChanged();
+		}
 		return;
 	}
 
@@ -741,8 +759,18 @@ void MultiplayerController::onRemoteSessionProtocolError(const Netplay::SessionP
 			.arg(expectedSequence);
 	}
 
-	const QString uiState = _uiRemoteStateMessage(error);
+	const RemoteUiFailureMessage uiFailure = _mapRemoteUiFailureMessage(error);
+	const QString uiState = uiFailure.userMessage;
 	LOG(QT, ERROR) << uiState;
+
+	const bool terminal = error.category == Netplay::NetplayErrorCategory::ProtocolMismatch
+		|| error.category == Netplay::NetplayErrorCategory::MalformedMessage
+		|| error.code == 409
+		|| error.code == 426
+		|| error.code == 403
+		|| error.code == 404;
+	emit remoteSessionFailureNotified(uiFailure.state, uiFailure.userMessage, error.code, _categoryTag(error.category), terminal);
+	m_remoteFailureNotified = true;
 
 	if (isRemoteNetDriverActive() && m_remoteDriverBridge) {
 		m_remoteDriverBridge->enqueueSessionFailure(_mapFailureKindFromError(error), error.code, error.sequence);

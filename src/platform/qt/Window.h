@@ -9,6 +9,7 @@
 #include <QDateTime>
 #include <QElapsedTimer>
 #include <QList>
+#include <QLabel>
 #include <QMainWindow>
 #include <QTimer>
 
@@ -37,7 +38,6 @@ class DebuggerConsoleController;
 class Display;
 class DolphinConnector;
 class FrameView;
-class QLabel;
 class GDBController;
 class GIFView;
 class LibraryController;
@@ -180,6 +180,7 @@ private:
 	void openStateWindow(LoadSave);
 	void configureAndStartRemoteSession(bool createRoom);
 	void refreshMultiplayerStatusDisplay();
+	void notifyRemoteSessionFailure(const QString& state, const QString& userMessage, int code, const QString& category, bool terminal);
 	QString multiplayerStatusText(const MultiplayerController* multiplayer) const;
 	MultiplayerController* multiplayerControllerForNetplayUi(bool requireController = true) const;
 
