@@ -69,8 +69,9 @@ Transport uses 4-byte big-endian length-prefixed framing, followed by UTF-8 JSON
 Cross-environment validation scenarios (LAN/WAN/jitter, room-size coverage, disconnect handling, and savestate v1 behavior) are documented in:
 
 - `docs/netplay/validation-v1.md`
+- `docs/netplay/setup-windows-v1.md` (Windows install and smoke-check playbooks)
 
-For relay-focused runs, attach relay logs plus the scenario reporting fields from that document.
+For relay-focused runs, attach relay logs plus the scenario reporting fields from those documents.
 
 ## Automated relay E2E coverage
 

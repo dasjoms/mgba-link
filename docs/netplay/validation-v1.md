@@ -2,6 +2,8 @@
 
 This document defines reproducible validation scenarios for Link Net v1 behavior across local and internet-like conditions. It is intended to be run against the Qt frontend + GBA-only v1 scope and paired with relay/server logs for incident triage.
 
+For Windows host/client provisioning and smoke checks before running these scenarios, use `docs/netplay/setup-windows-v1.md`.
+
 ## Test matrix (v1)
 
 Use the following template fields for every run:
