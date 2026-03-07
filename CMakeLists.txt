@@ -1086,6 +1086,26 @@ if(BUILD_TEST OR BUILD_SUITE OR BUILD_CINEMA)
 endif()
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/src/platform/test ${CMAKE_CURRENT_BINARY_DIR}/test)
 
+if(BUILD_SUITE)
+	add_custom_target(ci-netplay-core-tests
+		COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -R "^gba-net$"
+		USES_TERMINAL)
+	add_dependencies(ci-netplay-core-tests test-gba-net)
+	if(BUILD_QT)
+		add_custom_target(ci-netplay-qt-tests
+			COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -R "^platform-qt-(session-message-adapter|netplay-codec|netplay-driver-bridge)$"
+			USES_TERMINAL)
+		add_dependencies(ci-netplay-qt-tests test-qt-session-message-adapter test-qt-netplay-codec test-qt-netplay-driver-bridge)
+	endif()
+	find_program(GO_EXE NAMES go)
+	if(GO_EXE)
+		add_custom_target(ci-relay-harness-tests
+			COMMAND ${GO_EXE} test ./transport -run TestRelayHarness
+			WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/server/relay
+			USES_TERMINAL)
+	endif()
+endif()
+
 if(BUILD_EXAMPLE)
 	add_executable(${BINARY_NAME}-example-server ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/example/client-server/server.c)
 	target_link_libraries(${BINARY_NAME}-example-server ${BINARY_NAME})

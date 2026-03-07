@@ -181,16 +181,22 @@ func (m *Manager) ReservePublish(roomID, senderID string, senderSequence int64) 
 	return room.ServerSequence, senderPlayerID, ordered, nil
 }
 
+func _safeTrySend(ch chan []byte, payload []byte) {
+	defer func() {
+		_ = recover()
+	}()
+	select {
+	case ch <- payload:
+	default:
+	}
+}
+
 func BroadcastOrdered(sessions []*Session, payload []byte) {
 	for _, s := range sessions {
-		if s == nil {
+		if s == nil || s.Send == nil {
 			continue
 		}
-
-		select {
-		case s.Send <- payload:
-		default:
-		}
+		_safeTrySend(s.Send, payload)
 	}
 }
 

@@ -69,6 +69,81 @@ private slots:
 		QVERIFY(!net.d.start(&net.d));
 		QCOMPARE(net.d.connectedDevices(&net.d), 0);
 	}
+
+	void controlEventsAreAppliedBeforeQueuedTransferResults() {
+		DriverEventQueueBridge bridge;
+		GBASIONetDriver net;
+		GBASIONetDriverCreate(&net);
+		GBASIONetDriverSetQueues(&net, nullptr, bridge.inboundQueue());
+		net.state = GBA_SIO_NET_IN_ROOM;
+		net.localPlayerId = 1;
+		net.roomPlayerCount = 2;
+		net.attachedPlayerMask = (1U << 1) | (1U << 2);
+		net.mode = GBA_SIO_NORMAL_8;
+
+		QVERIFY(bridge.enqueueTransferResult(2, 1, 9, 55, QByteArray::fromHex("66")));
+		QVERIFY(bridge.enqueueSessionFailure(GBA_SIO_NET_FAIL_DISCONNECTED, 0, 10));
+
+		QVERIFY(!net.d.start(&net.d));
+		QCOMPARE(net.state, GBA_SIO_NET_DISCONNECTED);
+		QCOMPARE(net.d.finishNormal8(&net.d), static_cast<uint8_t>(0xFF));
+		QVERIFY(!net.d.start(&net.d));
+	}
+
+	void disconnectMidTransferForcesDeterministicFallback() {
+		DriverEventQueueBridge bridge;
+		GBASIONetDriver net;
+		GBASIONetDriverCreate(&net);
+		GBASIONetDriverSetQueues(&net, nullptr, bridge.inboundQueue());
+		net.state = GBA_SIO_NET_IN_ROOM;
+		net.localPlayerId = 1;
+		net.mode = GBA_SIO_NORMAL_32;
+
+		QVERIFY(!net.d.start(&net.d));
+		QVERIFY(net.transferArmed);
+
+		QVERIFY(bridge.enqueueSessionFailure(GBA_SIO_NET_FAIL_DISCONNECTED, 17, 1));
+		QVERIFY(!net.d.start(&net.d));
+		QCOMPARE(net.lastFailureCode, 17);
+		QCOMPARE(net.state, GBA_SIO_NET_DISCONNECTED);
+		QCOMPARE(net.d.finishNormal32(&net.d), static_cast<uint32_t>(0xFFFFFFFF));
+	}
+
+	void saveLoadRoundTripPreservesDisconnectedTransferState() {
+		GBASIONetDriver source;
+		GBASIONetDriver restored;
+		GBASIONetDriverCreate(&source);
+		GBASIONetDriverCreate(&restored);
+
+		source.state = GBA_SIO_NET_DISCONNECTED;
+		source.mode = GBA_SIO_MULTI;
+		source.localPlayerId = 2;
+		source.roomPlayerCount = 3;
+		source.attachedPlayerMask = 0x7;
+		source.transferArmed = true;
+		source.transferOrdinal = 9;
+		source.committedTransferOrdinal = 9;
+		source.nextOutboundSequence = 42;
+
+		void* stateBlob = nullptr;
+		size_t stateBlobSize = 0;
+		source.d.saveState(&source.d, &stateBlob, &stateBlobSize);
+		QVERIFY(stateBlob);
+		QCOMPARE(stateBlobSize, size_t(0x40));
+
+		QVERIFY(restored.d.loadState(&restored.d, stateBlob, stateBlobSize));
+		free(stateBlob);
+
+		QCOMPARE(restored.state, GBA_SIO_NET_DISCONNECTED);
+		QCOMPARE(restored.mode, GBA_SIO_MULTI);
+		QCOMPARE(restored.localPlayerId, 2);
+		QCOMPARE(restored.roomPlayerCount, 3);
+		QCOMPARE(restored.attachedPlayerMask, static_cast<uint8_t>(0x7));
+		QCOMPARE(restored.transferOrdinal, static_cast<uint32_t>(9));
+		QCOMPARE(restored.committedTransferOrdinal, static_cast<uint32_t>(9));
+		QCOMPARE(restored.nextOutboundSequence, static_cast<int64_t>(42));
+		QVERIFY(restored.committedTransferReady);
+	}
 };
 
 QTEST_APPLESS_MAIN(NetplayDriverBridgeTest)
