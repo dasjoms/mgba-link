@@ -9,6 +9,7 @@
 #include "CoreController.h"
 #include "LogController.h"
 #include "utils.h"
+#include "netplay/DriverEventQueueBridge.h"
 #include "netplay/Session.h"
 #include "netplay/SessionTypes.h"
 
@@ -56,7 +57,8 @@ int MultiplayerController::Player::id() const {
 	switch (controller->platform()) {
 #ifdef M_CORE_GBA
 	case mPLATFORM_GBA: {
-		int id = node.gba->d.deviceId(&node.gba->d);
+		GBASIODriver* driver = remoteBackend ? &node.gbaNet->d : &node.gba->d;
+		int id = driver->deviceId(driver);
 		if (id >= 0) {
 			return id;
 		} else {
@@ -266,11 +268,15 @@ bool MultiplayerController::attachPlayerToBackend(Player& player, bool delayedAt
 			return true;
 		}
 		struct mCore* core = player.controller->thread()->core;
-		// Local-only attach path: node is attached to the lockstep coordinator and then exposed as
-		// the link-port peripheral. Future remote session backends should call setPlayerAttached()
-		// from their own lifecycle events without requiring this coordinator call.
-		GBASIOLockstepCoordinatorAttach(&m_gbaCoordinator, player.node.gba);
-		core->setPeripheral(core, mPERIPH_GBA_LINK_PORT, &player.node.gba->d);
+		if (player.remoteBackend) {
+			core->setPeripheral(core, mPERIPH_GBA_LINK_PORT, &player.node.gbaNet->d);
+		} else {
+			// Local-only attach path: node is attached to the lockstep coordinator and then exposed as
+			// the link-port peripheral. Future remote session backends should call setPlayerAttached()
+			// from their own lifecycle events without requiring this coordinator call.
+			GBASIOLockstepCoordinatorAttach(&m_gbaCoordinator, player.node.gba);
+			core->setPeripheral(core, mPERIPH_GBA_LINK_PORT, &player.node.gba->d);
+		}
 		setPlayerAttached(player, true);
 		return true;
 	}
@@ -291,10 +297,11 @@ void MultiplayerController::detachPlayerFromBackend(Player& player, mCoreThread*
 	case mPLATFORM_GBA: {
 		GBA* gba = static_cast<GBA*>(thread->core->board);
 		GBASIODriver* node = gba->sio.driver;
-		if (node == &player.node.gba->d) {
+		GBASIODriver* playerNode = player.remoteBackend ? &player.node.gbaNet->d : &player.node.gba->d;
+		if (node == playerNode) {
 			thread->core->setPeripheral(thread->core, mPERIPH_GBA_LINK_PORT, NULL);
 		}
-		if (player.attached) {
+		if (player.attached && !player.remoteBackend) {
 			// Local-only detach path: coordinator membership currently tracks active players.
 			// Remote backend disconnect events should eventually feed into this shared state transition.
 			GBASIOLockstepCoordinatorDetach(&m_gbaCoordinator, player.node.gba);
@@ -318,6 +325,16 @@ void MultiplayerController::clearRemoteSessionBookkeeping() {
 	m_remotePlayerId = -1;
 }
 
+bool MultiplayerController::isRemoteNetDriverActive() const {
+	return m_remoteSession && m_platform == mPLATFORM_GBA;
+}
+
+int MultiplayerController::parseRemotePlayerId(const QString& peerId) const {
+	bool ok = false;
+	const int parsedId = peerId.toInt(&ok);
+	return ok ? parsedId : -1;
+}
+
 bool MultiplayerController::startRemoteSession(std::unique_ptr<Netplay::Session> session) {
 	if (!session || m_remoteSession || !m_pids.isEmpty()) {
 		return false;
@@ -338,7 +355,11 @@ bool MultiplayerController::startRemoteSession(std::unique_ptr<Netplay::Session>
 	callbacks.onProtocolError = [this](const Netplay::SessionProtocolError& error) {
 		onRemoteSessionProtocolError(error);
 	};
+	callbacks.onInboundLinkEvent = [this](const Netplay::SessionEventEnvelope& event) {
+		onRemoteSessionInboundLinkEvent(event);
+	};
 	m_remoteSession->setCallbacks(std::move(callbacks));
+	m_remoteDriverBridge.reset(new Netplay::DriverEventQueueBridge());
 	refreshRemoteSessionBookkeepingFromSession();
 	return true;
 }
@@ -349,6 +370,7 @@ void MultiplayerController::stopRemoteSession() {
 	}
 	m_remoteSession->disconnect();
 	m_remoteSession.reset();
+	m_remoteDriverBridge.reset();
 	clearRemoteSessionBookkeeping();
 }
 
@@ -432,12 +454,22 @@ void MultiplayerController::onRemoteSessionStateChanged(Netplay::SessionState st
 }
 
 void MultiplayerController::onRemoteSessionPeerJoined(const Netplay::SessionPeer& peer) {
-	Q_UNUSED(peer);
+	if (isRemoteNetDriverActive() && m_remoteDriverBridge) {
+		const int playerId = parseRemotePlayerId(peer.peerId);
+		if (playerId >= 0 && playerId < MAX_GBAS) {
+			m_remoteDriverBridge->enqueuePeerAttach(playerId, 0);
+		}
+	}
 	refreshRemoteSessionBookkeepingFromSession();
 }
 
 void MultiplayerController::onRemoteSessionPeerLeft(const Netplay::SessionPeer& peer) {
-	Q_UNUSED(peer);
+	if (isRemoteNetDriverActive() && m_remoteDriverBridge) {
+		const int playerId = parseRemotePlayerId(peer.peerId);
+		if (playerId >= 0 && playerId < MAX_GBAS) {
+			m_remoteDriverBridge->enqueuePeerDetach(playerId, 0);
+		}
+	}
 	refreshRemoteSessionBookkeepingFromSession();
 }
 
@@ -469,6 +501,19 @@ void MultiplayerController::onRemoteSessionProtocolError(const Netplay::SessionP
 	clearRemoteSessionBookkeeping();
 }
 
+void MultiplayerController::onRemoteSessionInboundLinkEvent(const Netplay::SessionEventEnvelope& event) {
+	if (!isRemoteNetDriverActive() || !m_remoteDriverBridge) {
+		return;
+	}
+	if (event.type != Netplay::SessionEventType::LinkInput) {
+		return;
+	}
+	const int localPlayerId = (m_remotePlayerId >= 0 && m_remotePlayerId < MAX_GBAS) ? m_remotePlayerId : 0;
+	const int senderPlayerId = parseRemotePlayerId(event.sourcePeerId);
+	const int32_t tickMarker = static_cast<int32_t>(event.serverSequence >= 0 ? event.serverSequence : event.sequence);
+	m_remoteDriverBridge->enqueueTransferResult(senderPlayerId, localPlayerId, event.sequence, tickMarker, event.payload);
+}
+
 void MultiplayerController::refreshRemoteSessionBookkeepingFromSession() {
 	if (!m_remoteSession) {
 		clearRemoteSessionBookkeeping();
@@ -493,9 +538,6 @@ void MultiplayerController::refreshRemoteSessionBookkeepingFromSession() {
 }
 
 bool MultiplayerController::attachGame(CoreController* controller) {
-	if (m_remoteSession) {
-		return false;
-	}
 	QList<CoreController::Interrupter> interrupters;
 	interrupters.append(controller);
 	for (Player& p : m_pids.values()) {
@@ -529,32 +571,58 @@ bool MultiplayerController::attachGame(CoreController* controller) {
 	switch (controller->platform()) {
 #ifdef M_CORE_GBA
 	case mPLATFORM_GBA: {
-		if (attached() >= MAX_GBAS) {
+		if (m_remoteSession && attached() >= 1) {
 			return false;
 		}
-
-		GBASIOLockstepDriver* node = new GBASIOLockstepDriver;
-		LockstepUser* user = new LockstepUser;
-		mLockstepThreadUserInit(user, thread);
-		user->controller = this;
-		user->pid = m_nextPid;
-		user->d.requestedId = [](mLockstepUser* ctx) {
-			mLockstepThreadUser* tctx = reinterpret_cast<mLockstepThreadUser*>(ctx);
-			LockstepUser* user = static_cast<LockstepUser*>(tctx);
-			MultiplayerController* controller = user->controller;
-			const auto iter = controller->m_pids.find(user->pid);
-			if (iter == controller->m_pids.end()) {
-				return -1;
+		if (!m_remoteSession && attached() >= MAX_GBAS) {
+			return false;
+		}
+		if (m_remoteSession) {
+			GBASIONetDriver* node = new GBASIONetDriver;
+			GBASIONetDriverCreate(node);
+			if (m_remoteDriverBridge) {
+				GBASIONetDriverSetQueues(node, nullptr, m_remoteDriverBridge->inboundQueue());
 			}
-			const Player& p = iter.value();
-			return p.preferredId;
-		};
+			node->state = GBA_SIO_NET_IN_ROOM;
+			node->localPlayerId = (m_remotePlayerId >= 0 && m_remotePlayerId < MAX_GBAS) ? m_remotePlayerId : 0;
+			node->roomPlayerCount = std::clamp(m_remotePlayerCount, 1, MAX_GBAS);
+			node->attachedPlayerMask = (1U << node->localPlayerId);
+			if (m_remoteSession) {
+				const auto room = m_remoteSession->room();
+				for (const auto& peer : room.peers) {
+					const int playerId = parseRemotePlayerId(peer.peerId);
+					if (playerId >= 0 && playerId < MAX_GBAS) {
+						node->attachedPlayerMask |= (1U << playerId);
+					}
+				}
+			}
+			player.node.gbaNet = node;
+			player.remoteBackend = true;
+		} else {
+			GBASIOLockstepDriver* node = new GBASIOLockstepDriver;
+			LockstepUser* user = new LockstepUser;
+			mLockstepThreadUserInit(user, thread);
+			user->controller = this;
+			user->pid = m_nextPid;
+			user->d.requestedId = [](mLockstepUser* ctx) {
+				mLockstepThreadUser* tctx = reinterpret_cast<mLockstepThreadUser*>(ctx);
+				LockstepUser* user = static_cast<LockstepUser*>(tctx);
+				MultiplayerController* controller = user->controller;
+				const auto iter = controller->m_pids.find(user->pid);
+				if (iter == controller->m_pids.end()) {
+					return -1;
+				}
+				const Player& p = iter.value();
+				return p.preferredId;
+			};
 
-		GBASIOLockstepDriverCreate(node, &user->d);
-		player.node.gba = node;
+			GBASIOLockstepDriverCreate(node, &user->d);
+			player.node.gba = node;
+			player.remoteBackend = false;
 
-		if (m_pids.size()) {
-			doDelayedAttach = true;
+			if (m_pids.size()) {
+				doDelayedAttach = true;
+			}
 		}
 		break;
 	}
@@ -656,8 +724,12 @@ void MultiplayerController::detachGame(CoreController* controller) {
 	switch (controller->platform()) {
 #ifdef M_CORE_GBA
 	case mPLATFORM_GBA:
-		delete reinterpret_cast<LockstepUser*>(p.node.gba->user);
-		delete p.node.gba;
+		if (p.remoteBackend) {
+			delete p.node.gbaNet;
+		} else {
+			delete reinterpret_cast<LockstepUser*>(p.node.gba->user);
+			delete p.node.gba;
+		}
 		break;
 #endif
 #ifdef M_CORE_GB
