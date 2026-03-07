@@ -236,6 +236,11 @@ set(TEST_QT_session_message_adapter_SRC
 	test/session-message-adapter.cpp
 	netplay/SessionMessageAdapter.cpp)
 
+set(TEST_QT_netplay_codec_SRC
+	test/netplay-codec.cpp
+	netplay/NetplayCodec.cpp
+	netplay/TcpSession.cpp)
+
 set(CPACK_DEBIAN_PACKAGE_DEPENDS "${CPACK_DEBIAN_PACKAGE_DEPENDS},libqt${QT_V}widgets${QT_V}")
 
 set(AUDIO_SRC)
