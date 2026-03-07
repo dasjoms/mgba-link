@@ -151,6 +151,7 @@ set(SOURCE_FILES
 	MemoryView.cpp
 	MessagePainter.cpp
 	MultiplayerController.cpp
+	netplay/SessionMessageAdapter.cpp
 	netplay/TcpSession.cpp
 	ObjView.cpp
 	OpenGLBug.cpp
@@ -229,6 +230,10 @@ set(TEST_QT_spanset_SRC
 	test/spanset.cpp
 	utils.cpp
 	VFileDevice.cpp)
+
+set(TEST_QT_session_message_adapter_SRC
+	test/session-message-adapter.cpp
+	netplay/SessionMessageAdapter.cpp)
 
 set(CPACK_DEBIAN_PACKAGE_DEPENDS "${CPACK_DEBIAN_PACKAGE_DEPENDS},libqt${QT_V}widgets${QT_V}")
 
