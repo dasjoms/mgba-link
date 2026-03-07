@@ -27,6 +27,7 @@ public:
 	bool enqueuePeerAttach(int playerId, int64_t sequence);
 	bool enqueuePeerDetach(int playerId, int64_t sequence);
 	bool enqueueSessionFailure(GBASIONetSessionFailureKind kind, int code, int64_t sequence);
+	size_t pendingInboundDepth() const;
 
 private:
 	struct Item {

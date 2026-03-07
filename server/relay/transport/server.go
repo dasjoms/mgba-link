@@ -137,6 +137,22 @@ func (s *Server) writeProtocolViolationAndDisconnect(conn net.Conn, v *protocol.
 	_ = writeEvent(conn, "disconnected", map[string]any{"reason": reason, "message": v.Message})
 }
 
+func heartbeatHealthFields(lastHeartbeat time.Time, timeout time.Duration) map[string]any {
+	ageMs := time.Since(lastHeartbeat).Milliseconds()
+	if ageMs < 0 {
+		ageMs = 0
+	}
+	timeoutMs := timeout.Milliseconds()
+	if timeoutMs < 0 {
+		timeoutMs = 0
+	}
+	return map[string]any{
+		"heartbeatAgeMs":     ageMs,
+		"heartbeatTimeoutMs": timeoutMs,
+		"heartbeatHealthy":   time.Since(lastHeartbeat) <= timeout,
+	}
+}
+
 func timeoutCodeForDuration(d time.Duration) int {
 	if d <= 0 {
 		return 400
@@ -189,6 +205,7 @@ func (s *Server) handleConn(conn net.Conn) {
 	roomID := ""
 	playerID := 0
 	state := stateConnected
+	roomServerSequence := int64(0)
 	logBase := map[string]any{"sessionId": session.ID, "remoteAddr": conn.RemoteAddr().String()}
 	setState := func(next connState, trigger string) {
 		if state == next {
@@ -210,16 +227,17 @@ func (s *Server) handleConn(conn net.Conn) {
 	}
 	logMessage := func(direction string, kind string, clientSeq int64, serverSeq int64, extra map[string]any) {
 		entry := map[string]any{
-			"event":          "message",
-			"direction":      direction,
-			"messageKind":    kind,
-			"roomId":         roomID,
-			"playerId":       playerID,
-			"clientSequence": clientSeq,
-			"serverSequence": serverSeq,
-			"sessionId":      logBase["sessionId"],
-			"remoteAddr":     logBase["remoteAddr"],
-			"state":          stateName(state),
+			"event":              "message",
+			"direction":          direction,
+			"messageKind":        kind,
+			"roomId":             roomID,
+			"playerId":           playerID,
+			"clientSequence":     clientSeq,
+			"serverSequence":     serverSeq,
+			"roomServerSequence": roomServerSequence,
+			"sessionId":          logBase["sessionId"],
+			"remoteAddr":         logBase["remoteAddr"],
+			"state":              stateName(state),
 		}
 		for k, v := range extra {
 			entry[k] = v
@@ -275,6 +293,7 @@ func (s *Server) handleConn(conn net.Conn) {
 				timeoutCode := timeoutCodeForDuration(s.cfg.HeartbeatTimeout)
 				v := &protocol.ProtocolViolation{Code: timeoutCode, Message: "heartbeat timeout", Reason: "networkTimeout"}
 				logProtocolViolation(v)
+				s.logStructured(map[string]any{"event": "heartbeatHealth", "roomId": roomID, "playerId": playerID, "sessionId": logBase["sessionId"], "remoteAddr": logBase["remoteAddr"], "state": stateName(state), "roomServerSequence": roomServerSequence, "reason": "readTimeout", "health": heartbeatHealthFields(lastHeartbeat, s.cfg.HeartbeatTimeout)})
 				s.writeProtocolViolationAndDisconnect(conn, v)
 				if roomID != "" {
 					s.leaveRoomAndNotifyPeers(roomID, session.ID, playerID, "networkTimeout")
@@ -285,6 +304,7 @@ func (s *Server) handleConn(conn net.Conn) {
 			}
 			if v, ok := err.(*protocol.ProtocolViolation); ok {
 				logProtocolViolation(v)
+				s.logStructured(map[string]any{"event": "heartbeatHealth", "roomId": roomID, "playerId": playerID, "sessionId": logBase["sessionId"], "remoteAddr": logBase["remoteAddr"], "state": stateName(state), "roomServerSequence": roomServerSequence, "reason": "readViolation", "health": heartbeatHealthFields(lastHeartbeat, s.cfg.HeartbeatTimeout)})
 				s.writeProtocolViolationAndDisconnect(conn, v)
 			}
 			return
@@ -404,7 +424,7 @@ func (s *Server) handleConn(conn net.Conn) {
 				return
 			}
 			lastHeartbeat = time.Now()
-			_ = sendEvent("heartbeatAck", map[string]any{"heartbeatCounter": intent.Heartbeat, "roomId": roomID}, intent.ClientSequence, 0)
+			_ = sendEvent("heartbeatAck", map[string]any{"heartbeatCounter": intent.Heartbeat, "roomId": roomID, "roomServerSequence": roomServerSequence, "health": heartbeatHealthFields(lastHeartbeat, s.cfg.HeartbeatTimeout)}, intent.ClientSequence, 0)
 		case "publishLinkEvent":
 			if state == stateConnected {
 				v := &protocol.ProtocolViolation{Code: 400, Message: "hello required before publishLinkEvent", Reason: "protocolError"}
@@ -438,8 +458,9 @@ func (s *Server) handleConn(conn net.Conn) {
 				return
 			}
 			event.SenderPlayerID = senderPlayerID
-			logMessage("outbound", "inboundLinkEvent", intent.ClientSequence, serverSequence, map[string]any{"roomId": roomID, "playerId": senderPlayerID})
-			out, _ := protocol.MarshalEvent("inboundLinkEvent", map[string]any{"roomId": roomID, "serverSequence": serverSequence, "event": event})
+			roomServerSequence = serverSequence
+			logMessage("outbound", "inboundLinkEvent", intent.ClientSequence, serverSequence, map[string]any{"roomId": roomID, "playerId": senderPlayerID, "roomTick": event.TickMarker, "heartbeat": heartbeatHealthFields(lastHeartbeat, s.cfg.HeartbeatTimeout)})
+			out, _ := protocol.MarshalEvent("inboundLinkEvent", map[string]any{"roomId": roomID, "serverSequence": serverSequence, "roomTick": event.TickMarker, "roomServerSequence": roomServerSequence, "event": event})
 			rooms.BroadcastOrdered(participants, out)
 		default:
 			v := &protocol.ProtocolViolation{Code: 400, Message: "unknown intent", Reason: "protocolError"}
@@ -454,6 +475,7 @@ func (s *Server) handleConn(conn net.Conn) {
 				timeoutCode := timeoutCodeForDuration(s.cfg.HeartbeatTimeout)
 				v := &protocol.ProtocolViolation{Code: timeoutCode, Message: "heartbeat timeout", Reason: "networkTimeout"}
 				logProtocolViolation(v)
+				s.logStructured(map[string]any{"event": "heartbeatHealth", "roomId": roomID, "playerId": playerID, "sessionId": logBase["sessionId"], "remoteAddr": logBase["remoteAddr"], "state": stateName(state), "roomServerSequence": roomServerSequence, "reason": "tickerTimeout", "health": heartbeatHealthFields(lastHeartbeat, s.cfg.HeartbeatTimeout)})
 				s.writeProtocolViolationAndDisconnect(conn, v)
 				if roomID != "" {
 					s.leaveRoomAndNotifyPeers(roomID, session.ID, playerID, "networkTimeout")

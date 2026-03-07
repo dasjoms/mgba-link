@@ -7,6 +7,7 @@
 
 #include <QObject>
 #include <QByteArray>
+#include <QHash>
 #include <QTimer>
 #include <QTcpSocket>
 
@@ -85,6 +86,9 @@ private:
 	qint64 m_expectedServerSequence = -1;
 	qint64 m_nextSequence = 0;
 	qint64 m_heartbeatCounter = 0;
+	QHash<qint64, qint64> m_pendingHeartbeatSamples;
+	qint64 m_lastRttSampleMs = -1;
+	double m_rttJitterMs = 0.0;
 	qint64 m_lastInboundHeartbeatMs = 0;
 	int m_heartbeatIntervalMs = 5000;
 	int m_heartbeatTimeoutMs = 15000;

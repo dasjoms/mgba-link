@@ -5,6 +5,10 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 #pragma once
 
+namespace QGBA {
+class ShaderSelector;
+}
+
 #if defined(BUILD_GL) || defined(BUILD_GLES2)
 
 #include <QDialog>
