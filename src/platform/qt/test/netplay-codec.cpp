@@ -50,6 +50,19 @@ private slots:
 		QCOMPARE(decodedInbound.kind, QStringLiteral("inboundLinkEvent"));
 		QCOMPARE(decodedInbound.payload.value(QStringLiteral("payload")).toByteArray(), QByteArray("abc"));
 
+		QJsonObject linkEventAlias;
+		linkEventAlias.insert(QStringLiteral("kind"), QStringLiteral("linkEvent"));
+		linkEventAlias.insert(QStringLiteral("eventId"), QStringLiteral("evt-legacy"));
+		linkEventAlias.insert(QStringLiteral("sourcePeerId"), QStringLiteral("peer-legacy"));
+		linkEventAlias.insert(QStringLiteral("sequence"), 1);
+		linkEventAlias.insert(QStringLiteral("type"), static_cast<int>(SessionEventType::LinkInput));
+		linkEventAlias.insert(QStringLiteral("payload"), QStringLiteral("YWI="));
+		linkEventAlias.insert(QStringLiteral("sentAtUtcMs"), qint64(124));
+		linkEventAlias.insert(QStringLiteral("metadata"), QJsonObject());
+		DecodedMessage decodedAlias = decodeFrame(QJsonDocument(linkEventAlias).toJson(QJsonDocument::Compact));
+		QVERIFY2(decodedAlias.isValid(), qPrintable(decodedAlias.error.message));
+		QCOMPARE(decodedAlias.kind, QStringLiteral("inboundLinkEvent"));
+
 		QJsonObject disconnected;
 		disconnected.insert(QStringLiteral("kind"), QStringLiteral("disconnected"));
 		disconnected.insert(QStringLiteral("reason"), QStringLiteral("clientRequested"));
