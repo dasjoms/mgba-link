@@ -189,6 +189,14 @@ func ParseAndValidateClientIntent(payload []byte) (*ClientIntent, *ProtocolViola
 	if _, ok := root["clientSequence"]; !ok {
 		return nil, &ProtocolViolation{Code: 400, Message: "missing required field: clientSequence", Reason: "protocolError"}
 	}
+	clientSequenceRaw := root["clientSequence"]
+	var clientSequenceNumber float64
+	if err := json.Unmarshal(clientSequenceRaw, &clientSequenceNumber); err != nil {
+		return nil, &ProtocolViolation{Code: 400, Message: "clientSequence must be an integer", Reason: "protocolError"}
+	}
+	if clientSequenceNumber < 0 || clientSequenceNumber != float64(int64(clientSequenceNumber)) {
+		return nil, &ProtocolViolation{Code: 400, Message: "clientSequence must be a non-negative integer", Reason: "protocolError"}
+	}
 
 	return &decoded, nil
 }
