@@ -152,6 +152,7 @@ set(SOURCE_FILES
 	MessagePainter.cpp
 	MultiplayerController.cpp
 	netplay/SessionMessageAdapter.cpp
+	netplay/DriverEventQueueBridge.cpp
 	netplay/NetplayCodec.cpp
 	netplay/TcpSession.cpp
 	ObjView.cpp
@@ -240,6 +241,10 @@ set(TEST_QT_netplay_codec_SRC
 	test/netplay-codec.cpp
 	netplay/NetplayCodec.cpp
 	netplay/TcpSession.cpp)
+
+set(TEST_QT_netplay_driver_bridge_SRC
+	test/netplay-driver-bridge.cpp
+	netplay/DriverEventQueueBridge.cpp)
 
 set(CPACK_DEBIAN_PACKAGE_DEPENDS "${CPACK_DEBIAN_PACKAGE_DEPENDS},libqt${QT_V}widgets${QT_V}")
 

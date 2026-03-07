@@ -14,6 +14,7 @@
 #include <mgba/core/lockstep.h>
 #ifdef M_CORE_GBA
 #include <mgba/internal/gba/sio/lockstep.h>
+#include <mgba/internal/gba/sio/net.h>
 #endif
 #ifdef M_CORE_GB
 #include <mgba/internal/gb/sio/lockstep.h>
@@ -27,10 +28,12 @@ struct GBASIOLockstepNode;
 namespace QGBA {
 
 namespace Netplay {
+class DriverEventQueueBridge;
 class Session;
 enum class SessionState;
 struct SessionPeer;
 struct SessionProtocolError;
+struct SessionEventEnvelope;
 }
 
 class ConfigController;
@@ -80,6 +83,7 @@ private:
 	union Node {
 		GBSIOLockstepNode* gb;
 		GBASIOLockstepDriver* gba;
+		GBASIONetDriver* gbaNet;
 	};
 	struct Player {
 		Player(CoreController* controller);
@@ -95,6 +99,7 @@ private:
 		int saveId = 1;
 		int preferredId = 0;
 		bool attached = false;
+		bool remoteBackend = false;
 	};
 	struct LockstepUser : mLockstepThreadUser {
 		MultiplayerController* controller;
@@ -115,7 +120,10 @@ private:
 	void onRemoteSessionPeerJoined(const Netplay::SessionPeer& peer);
 	void onRemoteSessionPeerLeft(const Netplay::SessionPeer& peer);
 	void onRemoteSessionProtocolError(const Netplay::SessionProtocolError& error);
+	void onRemoteSessionInboundLinkEvent(const Netplay::SessionEventEnvelope& event);
 	void refreshRemoteSessionBookkeepingFromSession();
+	bool isRemoteNetDriverActive() const;
+	int parseRemotePlayerId(const QString& peerId) const;
 
 	union {
 		mLockstep m_lockstep;
@@ -139,6 +147,7 @@ private:
 	int m_remotePlayerCount = 0;
 	int m_remotePlayerId = -1;
 	RemoteSessionConfig m_remoteSessionConfig;
+	std::unique_ptr<Netplay::DriverEventQueueBridge> m_remoteDriverBridge;
 };
 
 }
