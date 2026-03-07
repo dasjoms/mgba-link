@@ -7,6 +7,7 @@
 #include "netplay/TcpSession.h"
 
 #include <QDateTime>
+#include <QDebug>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonValue>
@@ -109,6 +110,7 @@ bool TcpSession::connect(const SessionConnectRequest& request) {
 
 	m_host.clear();
 	m_port = 0;
+	m_endpoint = request.endpoint.trimmed();
 	m_authToken = request.authToken;
 	m_nextSequence = 0;
 	m_heartbeatCounter = 0;
@@ -152,12 +154,15 @@ bool TcpSession::connect(const SessionConnectRequest& request) {
 	}
 
 	if (m_host.isEmpty() || !m_port) {
-		_dispatchProtocolError(1, QStringLiteral("Invalid endpoint"), request.options);
+		QVariantMap details = request.options;
+		details[QStringLiteral("endpoint")] = request.endpoint;
+		_dispatchProtocolError(1, QStringLiteral("Invalid endpoint"), NetplayErrorCategory::ConnectionFailure, -1, -1, details);
 		_setState(SessionState::Error);
 		return false;
 	}
 
 	_setState(SessionState::Connecting);
+	m_endpoint = QStringLiteral("tcp://%1:%2").arg(m_host).arg(m_port);
 	m_socket.connectToHost(m_host, m_port);
 	return true;
 }
@@ -254,7 +259,7 @@ void TcpSession::_onSocketError(QAbstractSocket::SocketError error) {
 	QVariantMap details;
 	details[QStringLiteral("socketError")] = static_cast<int>(m_socket.error());
 	details[QStringLiteral("socketErrorString")] = m_socket.errorString();
-	_dispatchProtocolError(2, QStringLiteral("Socket error"), details);
+	_dispatchProtocolError(2, QStringLiteral("Socket error"), NetplayErrorCategory::ConnectionFailure, -1, -1, details);
 	_setState(SessionState::Error);
 }
 
@@ -285,7 +290,7 @@ void TcpSession::_checkHeartbeatTimeout() {
 
 	QVariantMap details;
 	details[QStringLiteral("heartbeatTimeoutMs")] = m_heartbeatTimeoutMs;
-	_dispatchProtocolError(3, QStringLiteral("Heartbeat timeout"), details);
+	_dispatchProtocolError(3, QStringLiteral("Heartbeat timeout"), NetplayErrorCategory::HeartbeatTimeout, m_heartbeatCounter, -1, details);
 	_setState(SessionState::Error);
 	disconnect();
 }
@@ -305,7 +310,7 @@ bool TcpSession::_sendFrame(const QByteArray& payload) {
 		return false;
 	}
 	if (payload.size() < 0 || payload.size() > static_cast<int>(MAX_FRAME_SIZE)) {
-		_dispatchProtocolError(4, QStringLiteral("Frame too large"));
+		_dispatchProtocolError(4, QStringLiteral("Frame too large"), NetplayErrorCategory::MalformedMessage);
 		return false;
 	}
 
@@ -327,7 +332,7 @@ bool TcpSession::_sendIntent(const QVariantMap& intent) {
 	wrappedIntent[QStringLiteral("clientSequence")] = m_nextSequence++;
 	QJsonDocument document = QJsonDocument::fromVariant(wrappedIntent);
 	if (!document.isObject()) {
-		_dispatchProtocolError(5, QStringLiteral("Intent encoding failed"));
+		_dispatchProtocolError(5, QStringLiteral("Intent encoding failed"), NetplayErrorCategory::MalformedMessage, m_nextSequence - 1);
 		return false;
 	}
 	return _sendFrame(document.toJson(QJsonDocument::Compact));
@@ -346,7 +351,7 @@ void TcpSession::_drainFrames() {
 			(static_cast<quint32>(bytes[3]));
 
 		if (!length || length > MAX_FRAME_SIZE) {
-			_dispatchProtocolError(6, QStringLiteral("Invalid frame length"));
+			_dispatchProtocolError(6, QStringLiteral("Invalid frame length"), NetplayErrorCategory::MalformedMessage);
 			disconnect();
 			return;
 		}
@@ -364,7 +369,7 @@ void TcpSession::_handleFrame(const QByteArray& payload) {
 	QJsonParseError parseError;
 	QJsonDocument document = QJsonDocument::fromJson(payload, &parseError);
 	if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
-		_dispatchProtocolError(7, QStringLiteral("Invalid JSON frame"));
+		_dispatchProtocolError(7, QStringLiteral("Invalid JSON frame"), NetplayErrorCategory::MalformedMessage);
 		return;
 	}
 
@@ -420,7 +425,17 @@ void TcpSession::_handleFrame(const QByteArray& payload) {
 		return;
 	}
 	if (kind == QStringLiteral("error")) {
-		_dispatchProtocolError(_intValue(event, QStringLiteral("code")), _stringValue(event, QStringLiteral("message")), event);
+		const int code = _intValue(event, QStringLiteral("code"));
+		const QString message = _stringValue(event, QStringLiteral("message"));
+		const QString lowerMessage = message.toLower();
+		NetplayErrorCategory category = NetplayErrorCategory::ProtocolMismatch;
+		if (code == 403 || code == 409 || code == 429
+				|| lowerMessage.contains(QStringLiteral("full"))
+				|| lowerMessage.contains(QStringLiteral("reject"))
+				|| lowerMessage.contains(QStringLiteral("denied"))) {
+			category = NetplayErrorCategory::RoomRejectedOrFull;
+		}
+		_dispatchProtocolError(code, message, category, _longValue(event, QStringLiteral("sequence")), -1, event);
 		_setState(SessionState::Error);
 		return;
 	}
@@ -428,21 +443,38 @@ void TcpSession::_handleFrame(const QByteArray& payload) {
 		QVariantMap details = event;
 		details[QStringLiteral("reason")]
 			= static_cast<int>(_disconnectReasonFromString(_stringValue(event, QStringLiteral("reason"))));
-		_dispatchProtocolError(8, _stringValue(event, QStringLiteral("message")), details);
+		_dispatchProtocolError(8, _stringValue(event, QStringLiteral("message")), NetplayErrorCategory::ConnectionFailure, -1, -1, details);
 		disconnect();
 		return;
 	}
 
-	_dispatchProtocolError(9, QStringLiteral("Unknown server event kind"), event);
+	_dispatchProtocolError(9, QStringLiteral("Unknown server event kind"), NetplayErrorCategory::ProtocolMismatch, _longValue(event, QStringLiteral("sequence")), -1, event);
 }
 
-void TcpSession::_dispatchProtocolError(int code, const QString& message, const QVariantMap& details) {
+void TcpSession::_dispatchProtocolError(int code, const QString& message, NetplayErrorCategory category, qint64 sequence, qint64 expectedSequence, const QVariantMap& details) {
+	qWarning().noquote()
+		<< QStringLiteral("[netplay][layer=%1][category=%2] transport/session error code=%3 message=\"%4\" endpoint=%5 room=%6 sequence=%7 expectedSequence=%8")
+			.arg(QString::fromLatin1(netplayFailureLayerName(NetplayFailureLayer::TransportSession)))
+			.arg(QString::fromLatin1(netplayErrorCategoryName(category)))
+			.arg(code)
+			.arg(message)
+			.arg(m_endpoint.isEmpty() ? QStringLiteral("n/a") : m_endpoint)
+			.arg(m_room.roomId.isEmpty() ? QStringLiteral("n/a") : m_room.roomId)
+			.arg(sequence >= 0 ? QString::number(sequence) : QStringLiteral("n/a"))
+			.arg(expectedSequence >= 0 ? QString::number(expectedSequence) : QStringLiteral("n/a"));
+
 	if (!m_callbacks.onProtocolError) {
 		return;
 	}
 	SessionProtocolError error;
 	error.code = code;
 	error.message = message;
+	error.category = category;
+	error.layer = NetplayFailureLayer::TransportSession;
+	error.endpoint = m_endpoint;
+	error.roomId = m_room.roomId;
+	error.sequence = sequence;
+	error.expectedSequence = expectedSequence;
 	error.details = details;
 	m_callbacks.onProtocolError(error);
 }

@@ -10,6 +10,7 @@
 #include "LogController.h"
 #include "utils.h"
 #include "netplay/Session.h"
+#include "netplay/SessionTypes.h"
 
 #ifdef M_CORE_GBA
 #include <mgba/internal/gba/gba.h>
@@ -21,6 +22,19 @@
 #include <algorithm>
 
 using namespace QGBA;
+
+
+namespace {
+
+QString _layerTag(QGBA::Netplay::NetplayFailureLayer layer) {
+	return QString::fromLatin1(QGBA::Netplay::netplayFailureLayerName(layer));
+}
+
+QString _categoryTag(QGBA::Netplay::NetplayErrorCategory category) {
+	return QString::fromLatin1(QGBA::Netplay::netplayErrorCategoryName(category));
+}
+
+} // namespace
 
 QString MultiplayerController::RemoteSessionConfig::endpoint() const {
 	if (!hasServerEndpoint()) {
@@ -428,7 +442,30 @@ void MultiplayerController::onRemoteSessionPeerLeft(const Netplay::SessionPeer& 
 }
 
 void MultiplayerController::onRemoteSessionProtocolError(const Netplay::SessionProtocolError& error) {
-	LOG(QT, ERROR) << tr("Remote netplay protocol error (%0): %1").arg(error.code).arg(error.message);
+	const QString endpoint = error.endpoint.isEmpty() ? m_remoteSessionConfig.endpoint() : error.endpoint;
+	const QString roomId = !error.roomId.isEmpty() ? error.roomId : m_remoteSessionConfig.room;
+	const QString sequence = (error.sequence >= 0) ? QString::number(error.sequence) : QStringLiteral("n/a");
+	const QString expectedSequence = (error.expectedSequence >= 0) ? QString::number(error.expectedSequence) : QStringLiteral("n/a");
+
+	LOG(QT, ERROR) << tr("Remote netplay failure [layer=%0 category=%1 code=%2] message=%3 endpoint=%4 room=%5 sequence=%6 expectedSequence=%7")
+		.arg(_layerTag(Netplay::NetplayFailureLayer::ControllerIntegration))
+		.arg(_categoryTag(error.category))
+		.arg(error.code)
+		.arg(error.message)
+		.arg(endpoint)
+		.arg(roomId)
+		.arg(sequence)
+		.arg(expectedSequence);
+
+	if (error.layer != Netplay::NetplayFailureLayer::ControllerIntegration) {
+		LOG(QT, ERROR) << tr("Remote netplay origin layer=%0 endpoint=%1 room=%2 sequence=%3 expectedSequence=%4")
+			.arg(_layerTag(error.layer))
+			.arg(endpoint)
+			.arg(roomId)
+			.arg(sequence)
+			.arg(expectedSequence);
+	}
+
 	clearRemoteSessionBookkeeping();
 }
 

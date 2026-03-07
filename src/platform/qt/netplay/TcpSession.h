@@ -51,7 +51,7 @@ private:
 	bool _sendIntent(const QVariantMap& intent);
 	void _drainFrames();
 	void _handleFrame(const QByteArray& payload);
-	void _dispatchProtocolError(int code, const QString& message, const QVariantMap& details = QVariantMap());
+	void _dispatchProtocolError(int code, const QString& message, NetplayErrorCategory category = NetplayErrorCategory::ProtocolMismatch, qint64 sequence = -1, qint64 expectedSequence = -1, const QVariantMap& details = QVariantMap());
 
 	QTcpSocket m_socket;
 	QByteArray m_receiveBuffer;
@@ -61,6 +61,7 @@ private:
 	SessionPeer m_localPeer;
 
 	QString m_host;
+	QString m_endpoint;
 	quint16 m_port = 0;
 	QString m_authToken;
 	qint64 m_nextSequence = 0;

@@ -34,6 +34,48 @@ enum class SessionEventType {
 	Custom,
 };
 
+enum class NetplayErrorCategory {
+	ConnectionFailure,
+	ProtocolMismatch,
+	HeartbeatTimeout,
+	RoomRejectedOrFull,
+	MalformedMessage,
+};
+
+enum class NetplayFailureLayer {
+	TransportSession,
+	BackendAdapter,
+	ControllerIntegration,
+};
+
+static inline const char* netplayErrorCategoryName(NetplayErrorCategory category) {
+	switch (category) {
+	case NetplayErrorCategory::ConnectionFailure:
+		return "connection_failure";
+	case NetplayErrorCategory::ProtocolMismatch:
+		return "protocol_mismatch";
+	case NetplayErrorCategory::HeartbeatTimeout:
+		return "heartbeat_timeout";
+	case NetplayErrorCategory::RoomRejectedOrFull:
+		return "room_rejected_or_full";
+	case NetplayErrorCategory::MalformedMessage:
+		return "malformed_message";
+	}
+	return "unknown";
+}
+
+static inline const char* netplayFailureLayerName(NetplayFailureLayer layer) {
+	switch (layer) {
+	case NetplayFailureLayer::TransportSession:
+		return "transport_session";
+	case NetplayFailureLayer::BackendAdapter:
+		return "backend_adapter";
+	case NetplayFailureLayer::ControllerIntegration:
+		return "controller_integration";
+	}
+	return "unknown";
+}
+
 struct SessionPeer {
 	QString peerId;
 	QString displayName;
@@ -180,6 +222,12 @@ struct SessionEventEnvelope {
 struct SessionProtocolError {
 	int code = 0;
 	QString message;
+	NetplayErrorCategory category = NetplayErrorCategory::ProtocolMismatch;
+	NetplayFailureLayer layer = NetplayFailureLayer::TransportSession;
+	QString endpoint;
+	QString roomId;
+	qint64 sequence = -1;
+	qint64 expectedSequence = -1;
 	QVariantMap details;
 };
 

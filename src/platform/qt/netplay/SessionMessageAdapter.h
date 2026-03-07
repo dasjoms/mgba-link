@@ -48,12 +48,13 @@ public:
 	int localPlayerId() const;
 
 private:
-	void _reportProtocolError(int code, const QString& message, const QVariantMap& details = QVariantMap()) const;
+	void _reportProtocolError(int code, const QString& message, NetplayErrorCategory category, qint64 sequence = -1, qint64 expectedSequence = -1, const QVariantMap& details = QVariantMap()) const;
 	void _resetRoomState();
 
 	ControllerCallbacks m_callbacks;
 	qint64 m_nextOutboundSequence = 0;
 	int m_localPlayerId = -1;
+	QString m_roomId;
 	QSet<int> m_knownPlayers;
 	QHash<int, qint64> m_lastInboundSequenceByPlayer;
 };
