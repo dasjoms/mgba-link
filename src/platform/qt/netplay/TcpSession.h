@@ -51,6 +51,7 @@ private:
 	bool _sendIntent(const QVariantMap& intent);
 	void _drainFrames();
 	void _handleFrame(const QByteArray& payload);
+	bool _hasActiveRoom() const;
 	void _dispatchProtocolError(int code, const QString& message, NetplayErrorCategory category = NetplayErrorCategory::ProtocolMismatch, qint64 sequence = -1, qint64 expectedSequence = -1, const QVariantMap& details = QVariantMap());
 
 	QTcpSocket m_socket;
@@ -64,6 +65,11 @@ private:
 	QString m_endpoint;
 	quint16 m_port = 0;
 	QString m_authToken;
+	QString m_clientName;
+	QString m_buildTag;
+	int m_protocolVersion = 1;
+	bool m_handshakeCompleted = false;
+	qint64 m_expectedServerSequence = -1;
 	qint64 m_nextSequence = 0;
 	qint64 m_heartbeatCounter = 0;
 	qint64 m_lastInboundHeartbeatMs = 0;
