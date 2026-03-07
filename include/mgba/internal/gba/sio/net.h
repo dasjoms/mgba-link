@@ -57,6 +57,9 @@ struct GBASIONetDriver {
 	bool sessionDisconnected;
 	enum GBASIONetSessionFailureKind lastFailureKind;
 	int lastFailureCode;
+	uint32_t checkpointInterval;
+	uint32_t lastCheckpointOrdinal;
+	uint32_t lastCheckpointHash;
 };
 
 void GBASIONetDriverCreate(struct GBASIONetDriver* driver);
