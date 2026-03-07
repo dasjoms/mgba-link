@@ -21,11 +21,61 @@
 #endif
 
 #include <algorithm>
+#include <chrono>
+#include <QDataStream>
+#include <QIODevice>
+#include <QVariantMap>
 
 using namespace QGBA;
 
 
 namespace {
+
+
+QByteArray _encodeDriverEventPayload(const GBASIONetEvent& event) {
+	QByteArray payload;
+	QDataStream stream(&payload, QIODevice::WriteOnly);
+	stream.setByteOrder(QDataStream::LittleEndian);
+	stream << static_cast<quint8>(1);
+	stream << static_cast<quint8>(event.type);
+	stream << static_cast<qint32>(event.senderPlayerId);
+	stream << static_cast<qint64>(event.sequence);
+	switch (event.type) {
+	case GBA_SIO_NET_EV_MODE_SET:
+		stream << static_cast<qint32>(event.modeSet.playerId);
+		stream << static_cast<qint32>(event.modeSet.mode);
+		break;
+	case GBA_SIO_NET_EV_TRANSFER_START:
+		stream << static_cast<qint32>(event.transferStart.playerId);
+		stream << static_cast<qint32>(event.transferStart.mode);
+		stream << static_cast<qint32>(event.transferStart.finishCycle);
+		break;
+	case GBA_SIO_NET_EV_TRANSFER_RESULT: {
+		stream << static_cast<qint32>(event.transferResult.playerId);
+		stream << static_cast<qint32>(event.transferResult.tickMarker);
+		const quint32 size = static_cast<quint32>(event.transferResult.payloadSize);
+		stream << size;
+		if (size && event.transferResult.payload) {
+			payload.append(reinterpret_cast<const char*>(event.transferResult.payload), static_cast<int>(event.transferResult.payloadSize));
+		}
+		break;
+	}
+	case GBA_SIO_NET_EV_HARD_SYNC:
+		stream << static_cast<qint32>(event.hardSync.tickMarker);
+		break;
+	case GBA_SIO_NET_EV_PEER_ATTACH:
+		stream << static_cast<qint32>(event.peerAttach.playerId);
+		break;
+	case GBA_SIO_NET_EV_PEER_DETACH:
+		stream << static_cast<qint32>(event.peerDetach.playerId);
+		break;
+	case GBA_SIO_NET_EV_SESSION_FAILURE:
+		stream << static_cast<qint32>(event.sessionFailure.kind);
+		stream << static_cast<qint32>(event.sessionFailure.code);
+		break;
+	}
+	return payload;
+}
 
 QString _layerTag(QGBA::Netplay::NetplayFailureLayer layer) {
 	return QString::fromLatin1(QGBA::Netplay::netplayFailureLayerName(layer));
@@ -420,6 +470,7 @@ bool MultiplayerController::startRemoteSession(std::unique_ptr<Netplay::Session>
 	};
 	m_remoteSession->setCallbacks(std::move(callbacks));
 	m_remoteDriverBridge.reset(new Netplay::DriverEventQueueBridge());
+	startRemoteDriverDispatcher();
 	refreshRemoteSessionBookkeepingFromSession();
 	return true;
 }
@@ -428,6 +479,7 @@ void MultiplayerController::stopRemoteSession() {
 	if (!m_remoteSession) {
 		return;
 	}
+	stopRemoteDriverDispatcher();
 	m_remoteSession->disconnect();
 	m_remoteSession.reset();
 	m_remoteDriverBridge.reset();
@@ -635,6 +687,66 @@ void MultiplayerController::onRemoteSessionInboundLinkEvent(const Netplay::Sessi
 		.arg(event.serverSequence >= 0 ? QString::number(event.serverSequence) : QStringLiteral("n/a"));
 }
 
+
+bool MultiplayerController::dispatchRemoteOutboundDriverEvent(const GBASIONetEvent& event) {
+	if (!m_remoteSession) {
+		return false;
+	}
+	const Netplay::SessionEventEnvelope envelope = mapOutboundDriverEventEnvelope(event);
+	if (m_remoteSession->sendEvent(envelope)) {
+		return true;
+	}
+	if (m_remoteDriverBridge) {
+		m_remoteDriverBridge->enqueueSessionFailure(GBA_SIO_NET_FAIL_DISCONNECTED, 0, event.sequence);
+	}
+	return false;
+}
+
+Netplay::SessionEventEnvelope MultiplayerController::mapOutboundDriverEventEnvelope(const GBASIONetEvent& event) const {
+	Netplay::SessionEventEnvelope envelope;
+	envelope.protocolVersion = 1;
+	envelope.roomId = m_remoteSession ? m_remoteSession->room().roomId : QString();
+	envelope.sourcePeerId = QString::number(event.senderPlayerId);
+	envelope.sequence = event.sequence;
+	envelope.type = Netplay::SessionEventType::LinkInput;
+	envelope.payload = _encodeDriverEventPayload(event);
+	envelope.metadata.insert(QStringLiteral("gbaNetEventType"), static_cast<int>(event.type));
+	return envelope;
+}
+
+bool MultiplayerController::dispatchRemoteOutboundDriverEvents() {
+	if (!isRemoteNetDriverActive() || !m_remoteDriverBridge) {
+		return false;
+	}
+	bool sentAny = false;
+	GBASIONetEvent event = {};
+	while (m_remoteDriverBridge->tryDequeueOutbound(&event)) {
+		sentAny = true;
+		dispatchRemoteOutboundDriverEvent(event);
+	}
+	return sentAny;
+}
+
+void MultiplayerController::startRemoteDriverDispatcher() {
+	stopRemoteDriverDispatcher();
+	m_remoteDriverDispatchStop = false;
+	m_remoteDriverDispatchThread = std::thread([this]() {
+		while (!m_remoteDriverDispatchStop) {
+			const bool sentAny = dispatchRemoteOutboundDriverEvents();
+			if (!sentAny) {
+				std::this_thread::sleep_for(std::chrono::milliseconds(1));
+			}
+		}
+	});
+}
+
+void MultiplayerController::stopRemoteDriverDispatcher() {
+	m_remoteDriverDispatchStop = true;
+	if (m_remoteDriverDispatchThread.joinable()) {
+		m_remoteDriverDispatchThread.join();
+	}
+}
+
 void MultiplayerController::refreshRemoteSessionBookkeepingFromSession() {
 	if (!m_remoteSession) {
 		clearRemoteSessionBookkeeping();
@@ -702,7 +814,7 @@ bool MultiplayerController::attachGame(CoreController* controller) {
 			GBASIONetDriver* node = new GBASIONetDriver;
 			GBASIONetDriverCreate(node);
 			if (m_remoteDriverBridge) {
-				GBASIONetDriverSetQueues(node, nullptr, m_remoteDriverBridge->inboundQueue());
+				GBASIONetDriverSetQueues(node, m_remoteDriverBridge->outboundQueue(), m_remoteDriverBridge->inboundQueue());
 			}
 			node->state = GBA_SIO_NET_IN_ROOM;
 			node->localPlayerId = (m_remotePlayerId >= 0 && m_remotePlayerId < MAX_GBAS) ? m_remotePlayerId : 0;

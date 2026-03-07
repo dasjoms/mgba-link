@@ -15,11 +15,39 @@ class NetplayDriverBridgeTest : public QObject {
 Q_OBJECT
 
 private slots:
+
+	void outboundQueueReceivesDriverIntentEvents() {
+		DriverEventQueueBridge bridge;
+		GBASIONetDriver net;
+		GBASIONetDriverCreate(&net);
+		GBASIONetDriverSetQueues(&net, bridge.outboundQueue(), bridge.inboundQueue());
+		net.state = GBA_SIO_NET_IN_ROOM;
+		net.localPlayerId = 1;
+		net.mode = GBA_SIO_NORMAL_8;
+
+		net.d.setMode(&net.d, GBA_SIO_MULTI);
+		QCOMPARE(bridge.pendingOutboundDepth(), size_t(1));
+		QVERIFY(!net.d.start(&net.d));
+		QCOMPARE(bridge.pendingOutboundDepth(), size_t(2));
+
+		GBASIONetEvent first = {};
+		GBASIONetEvent second = {};
+		QVERIFY(bridge.tryDequeueOutbound(&first));
+		QVERIFY(bridge.tryDequeueOutbound(&second));
+		QCOMPARE(first.type, GBA_SIO_NET_EV_MODE_SET);
+		QCOMPARE(first.modeSet.playerId, 1);
+		QCOMPARE(first.modeSet.mode, GBA_SIO_MULTI);
+		QCOMPARE(second.type, GBA_SIO_NET_EV_TRANSFER_START);
+		QCOMPARE(second.transferStart.playerId, 1);
+		QCOMPARE(second.transferStart.mode, GBA_SIO_MULTI);
+		QVERIFY(second.sequence > first.sequence);
+	}
+
 	void injectedInboundTransferResultReachesDriverCompletionPath() {
 		DriverEventQueueBridge bridge;
 		GBASIONetDriver net;
 		GBASIONetDriverCreate(&net);
-		GBASIONetDriverSetQueues(&net, nullptr, bridge.inboundQueue());
+		GBASIONetDriverSetQueues(&net, bridge.outboundQueue(), bridge.inboundQueue());
 		net.state = GBA_SIO_NET_IN_ROOM;
 		net.localPlayerId = 1;
 		net.roomPlayerCount = 2;
@@ -38,7 +66,7 @@ private slots:
 		DriverEventQueueBridge bridge;
 		GBASIONetDriver net;
 		GBASIONetDriverCreate(&net);
-		GBASIONetDriverSetQueues(&net, nullptr, bridge.inboundQueue());
+		GBASIONetDriverSetQueues(&net, bridge.outboundQueue(), bridge.inboundQueue());
 		net.state = GBA_SIO_NET_IN_ROOM;
 		net.localPlayerId = 1;
 		net.mode = GBA_SIO_NORMAL_8;
@@ -54,7 +82,7 @@ private slots:
 		DriverEventQueueBridge bridge;
 		GBASIONetDriver net;
 		GBASIONetDriverCreate(&net);
-		GBASIONetDriverSetQueues(&net, nullptr, bridge.inboundQueue());
+		GBASIONetDriverSetQueues(&net, bridge.outboundQueue(), bridge.inboundQueue());
 		net.state = GBA_SIO_NET_IN_ROOM;
 		net.localPlayerId = 1;
 		net.roomPlayerCount = 1;
@@ -74,7 +102,7 @@ private slots:
 		DriverEventQueueBridge bridge;
 		GBASIONetDriver net;
 		GBASIONetDriverCreate(&net);
-		GBASIONetDriverSetQueues(&net, nullptr, bridge.inboundQueue());
+		GBASIONetDriverSetQueues(&net, bridge.outboundQueue(), bridge.inboundQueue());
 		net.state = GBA_SIO_NET_IN_ROOM;
 		net.localPlayerId = 1;
 		net.roomPlayerCount = 2;
@@ -94,7 +122,7 @@ private slots:
 		DriverEventQueueBridge bridge;
 		GBASIONetDriver net;
 		GBASIONetDriverCreate(&net);
-		GBASIONetDriverSetQueues(&net, nullptr, bridge.inboundQueue());
+		GBASIONetDriverSetQueues(&net, bridge.outboundQueue(), bridge.inboundQueue());
 		net.state = GBA_SIO_NET_IN_ROOM;
 		net.localPlayerId = 1;
 		net.mode = GBA_SIO_NORMAL_32;
