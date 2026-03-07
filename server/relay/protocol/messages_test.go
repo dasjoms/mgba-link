@@ -51,3 +51,18 @@ func TestPublishLinkEventPayloadBounds(t *testing.T) {
 		t.Fatalf("expected 413 violation for oversized link payload, got %#v", violation)
 	}
 }
+
+func TestProtocolVersionMismatchDeterministicAcrossIntents(t *testing.T) {
+	tests := []string{
+		`{"intent":"createRoom","clientSequence":1,"protocolVersion":2,"roomName":"r","maxPlayers":2}`,
+		`{"intent":"joinRoom","clientSequence":1,"protocolVersion":2,"roomId":"r"}`,
+		`{"intent":"leaveRoom","clientSequence":1,"protocolVersion":2,"roomId":"r"}`,
+		`{"intent":"heartbeat","clientSequence":1,"protocolVersion":2,"heartbeatCounter":1}`,
+		`{"intent":"publishLinkEvent","clientSequence":1,"protocolVersion":2,"event":{"sequence":1,"senderPlayerId":1,"tickMarker":1,"payload":"AQ=="}}`,
+	}
+	for _, payload := range tests {
+		if _, violation := ParseAndValidateClientIntent([]byte(payload)); violation == nil || violation.Code != 426 {
+			t.Fatalf("expected 426 protocol mismatch for %s, got %#v", payload, violation)
+		}
+	}
+}
