@@ -20,7 +20,9 @@
 #include <mgba/internal/gb/sio/lockstep.h>
 #endif
 
+#include <atomic>
 #include <memory>
+#include <thread>
 
 struct GBSIOLockstepNode;
 struct GBASIOLockstepNode;
@@ -125,6 +127,11 @@ private:
 	void refreshRemoteSessionBookkeepingFromSession();
 	void dispatchPendingRemoteRoomAction();
 	void emitControllerRemoteSessionError(int code, const QString& message, Netplay::NetplayErrorCategory category, const QString& action);
+	bool dispatchRemoteOutboundDriverEvents();
+	bool dispatchRemoteOutboundDriverEvent(const GBASIONetEvent& event);
+	Netplay::SessionEventEnvelope mapOutboundDriverEventEnvelope(const GBASIONetEvent& event) const;
+	void startRemoteDriverDispatcher();
+	void stopRemoteDriverDispatcher();
 	bool isRemoteNetDriverActive() const;
 	int parseRemotePlayerId(const QString& peerId) const;
 
@@ -158,6 +165,8 @@ private:
 	PendingRemoteRoomAction m_pendingRemoteRoomAction = PendingRemoteRoomAction::None;
 	RemoteSessionConfig m_remoteSessionConfig;
 	std::unique_ptr<Netplay::DriverEventQueueBridge> m_remoteDriverBridge;
+	std::atomic<bool> m_remoteDriverDispatchStop = false;
+	std::thread m_remoteDriverDispatchThread;
 };
 
 }

@@ -10,16 +10,39 @@
 
 using namespace QGBA::Netplay;
 
+namespace {
+
+bool _eventHasPayload(const GBASIONetEvent& event) {
+	return event.type == GBA_SIO_NET_EV_TRANSFER_RESULT
+		&& event.transferResult.payload
+		&& event.transferResult.payloadSize > 0;
+}
+
+} // namespace
+
 DriverEventQueueBridge::DriverEventQueueBridge() {
-	static const GBASIONetEventQueueVTable DRIVER_EVENT_QUEUE_VTABLE = {
-		.push = DriverEventQueueBridge::_push,
-		.tryPop = DriverEventQueueBridge::_tryPop,
-		.waitPop = DriverEventQueueBridge::_waitPop,
-		.size = DriverEventQueueBridge::_size,
-		.wake = DriverEventQueueBridge::_wake,
+	static const GBASIONetEventQueueVTable DRIVER_OUTBOUND_QUEUE_VTABLE = {
+		.push = DriverEventQueueBridge::_pushOutbound,
+		.tryPop = DriverEventQueueBridge::_tryPopOutbound,
+		.waitPop = DriverEventQueueBridge::_waitPopOutbound,
+		.size = DriverEventQueueBridge::_sizeOutbound,
+		.wake = DriverEventQueueBridge::_wakeOutbound,
 	};
+	static const GBASIONetEventQueueVTable DRIVER_INBOUND_QUEUE_VTABLE = {
+		.push = DriverEventQueueBridge::_pushInbound,
+		.tryPop = DriverEventQueueBridge::_tryPopInbound,
+		.waitPop = DriverEventQueueBridge::_waitPopInbound,
+		.size = DriverEventQueueBridge::_sizeInbound,
+		.wake = DriverEventQueueBridge::_wakeInbound,
+	};
+	m_outboundQueue.context = this;
+	m_outboundQueue.vtable = &DRIVER_OUTBOUND_QUEUE_VTABLE;
 	m_inboundQueue.context = this;
-	m_inboundQueue.vtable = &DRIVER_EVENT_QUEUE_VTABLE;
+	m_inboundQueue.vtable = &DRIVER_INBOUND_QUEUE_VTABLE;
+}
+
+GBASIONetEventQueue* DriverEventQueueBridge::outboundQueue() {
+	return &m_outboundQueue;
 }
 
 GBASIONetEventQueue* DriverEventQueueBridge::inboundQueue() {
@@ -38,7 +61,7 @@ bool DriverEventQueueBridge::enqueueTransferResult(int senderPlayerId, int targe
 			.payloadSize = static_cast<size_t>(payload.size()),
 		},
 	};
-	return push(event);
+	return pushInbound(event);
 }
 
 bool DriverEventQueueBridge::enqueuePeerAttach(int playerId, int64_t sequence) {
@@ -50,7 +73,7 @@ bool DriverEventQueueBridge::enqueuePeerAttach(int playerId, int64_t sequence) {
 			.playerId = playerId,
 		},
 	};
-	return push(event);
+	return pushInbound(event);
 }
 
 bool DriverEventQueueBridge::enqueuePeerDetach(int playerId, int64_t sequence) {
@@ -62,12 +85,15 @@ bool DriverEventQueueBridge::enqueuePeerDetach(int playerId, int64_t sequence) {
 			.playerId = playerId,
 		},
 	};
-	return push(event);
+	return pushInbound(event);
 }
 
+size_t DriverEventQueueBridge::pendingOutboundDepth() const {
+	return outboundSize();
+}
 
 size_t DriverEventQueueBridge::pendingInboundDepth() const {
-	return size();
+	return inboundSize();
 }
 
 bool DriverEventQueueBridge::enqueueSessionFailure(GBASIONetSessionFailureKind kind, int code, int64_t sequence) {
@@ -80,81 +106,156 @@ bool DriverEventQueueBridge::enqueueSessionFailure(GBASIONetSessionFailureKind k
 			.code = code,
 		},
 	};
-	return push(event);
+	return pushInbound(event);
 }
 
-bool DriverEventQueueBridge::push(const GBASIONetEvent& event) {
+bool DriverEventQueueBridge::tryDequeueOutbound(GBASIONetEvent* outEvent) {
+	return tryPopOutbound(outEvent);
+}
+
+bool DriverEventQueueBridge::pushOutbound(const GBASIONetEvent& event) {
 	Item item;
 	item.event = event;
-	if (event.type == GBA_SIO_NET_EV_TRANSFER_RESULT && event.transferResult.payload && event.transferResult.payloadSize > 0) {
+	if (_eventHasPayload(event)) {
 		item.payload.assign(event.transferResult.payload, event.transferResult.payload + event.transferResult.payloadSize);
 		item.event.transferResult.payload = item.payload.data();
 		item.event.transferResult.payloadSize = item.payload.size();
 	}
 
 	std::lock_guard<std::mutex> lock(m_mutex);
-	m_items.push_back(std::move(item));
+	m_outboundItems.push_back(std::move(item));
 	return true;
 }
 
-bool DriverEventQueueBridge::tryPop(GBASIONetEvent* outEvent) {
+bool DriverEventQueueBridge::pushInbound(const GBASIONetEvent& event) {
+	Item item;
+	item.event = event;
+	if (_eventHasPayload(event)) {
+		item.payload.assign(event.transferResult.payload, event.transferResult.payload + event.transferResult.payloadSize);
+		item.event.transferResult.payload = item.payload.data();
+		item.event.transferResult.payloadSize = item.payload.size();
+	}
+
+	std::lock_guard<std::mutex> lock(m_mutex);
+	m_inboundItems.push_back(std::move(item));
+	return true;
+}
+
+bool DriverEventQueueBridge::tryPopOutbound(GBASIONetEvent* outEvent) {
 	if (!outEvent) {
 		return false;
 	}
 	std::lock_guard<std::mutex> lock(m_mutex);
-	if (m_items.empty()) {
+	if (m_outboundItems.empty()) {
 		return false;
 	}
-	*outEvent = m_items.front().event;
-	if (outEvent->type == GBA_SIO_NET_EV_TRANSFER_RESULT && outEvent->transferResult.payload && outEvent->transferResult.payloadSize > 0) {
-		m_lastPoppedPayload.assign(outEvent->transferResult.payload, outEvent->transferResult.payload + outEvent->transferResult.payloadSize);
-		outEvent->transferResult.payload = m_lastPoppedPayload.data();
-		outEvent->transferResult.payloadSize = m_lastPoppedPayload.size();
+	*outEvent = m_outboundItems.front().event;
+	if (_eventHasPayload(*outEvent)) {
+		m_lastPoppedOutboundPayload.assign(outEvent->transferResult.payload, outEvent->transferResult.payload + outEvent->transferResult.payloadSize);
+		outEvent->transferResult.payload = m_lastPoppedOutboundPayload.data();
+		outEvent->transferResult.payloadSize = m_lastPoppedOutboundPayload.size();
 	} else {
-		m_lastPoppedPayload.clear();
+		m_lastPoppedOutboundPayload.clear();
 	}
-	m_items.pop_front();
+	m_outboundItems.pop_front();
 	return true;
 }
 
-size_t DriverEventQueueBridge::size() const {
-	std::lock_guard<std::mutex> lock(m_mutex);
-	return m_items.size();
-}
-
-bool DriverEventQueueBridge::_push(GBASIONetEventQueue* queue, const GBASIONetEvent* event) {
-	DriverEventQueueBridge* self = static_cast<DriverEventQueueBridge*>(queue ? queue->context : nullptr);
-	return self && event ? self->push(*event) : false;
-}
-
-bool DriverEventQueueBridge::_tryPop(GBASIONetEventQueue* queue, GBASIONetEvent* outEvent) {
-	DriverEventQueueBridge* self = static_cast<DriverEventQueueBridge*>(queue ? queue->context : nullptr);
-	return self ? self->tryPop(outEvent) : false;
-}
-
-bool DriverEventQueueBridge::_waitPop(GBASIONetEventQueue* queue, GBASIONetEvent* outEvent, int32_t timeoutMs) {
-	DriverEventQueueBridge* self = static_cast<DriverEventQueueBridge*>(queue ? queue->context : nullptr);
-	if (!self) {
+bool DriverEventQueueBridge::tryPopInbound(GBASIONetEvent* outEvent) {
+	if (!outEvent) {
 		return false;
 	}
-	if (timeoutMs <= 0) {
-		return self->tryPop(outEvent);
+	std::lock_guard<std::mutex> lock(m_mutex);
+	if (m_inboundItems.empty()) {
+		return false;
 	}
-	const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
-	while (std::chrono::steady_clock::now() < deadline) {
-		if (self->tryPop(outEvent)) {
+	*outEvent = m_inboundItems.front().event;
+	if (_eventHasPayload(*outEvent)) {
+		m_lastPoppedInboundPayload.assign(outEvent->transferResult.payload, outEvent->transferResult.payload + outEvent->transferResult.payloadSize);
+		outEvent->transferResult.payload = m_lastPoppedInboundPayload.data();
+		outEvent->transferResult.payloadSize = m_lastPoppedInboundPayload.size();
+	} else {
+		m_lastPoppedInboundPayload.clear();
+	}
+	m_inboundItems.pop_front();
+	return true;
+}
+
+size_t DriverEventQueueBridge::outboundSize() const {
+	std::lock_guard<std::mutex> lock(m_mutex);
+	return m_outboundItems.size();
+}
+
+size_t DriverEventQueueBridge::inboundSize() const {
+	std::lock_guard<std::mutex> lock(m_mutex);
+	return m_inboundItems.size();
+}
+
+bool DriverEventQueueBridge::_pushOutbound(GBASIONetEventQueue* queue, const GBASIONetEvent* event) {
+	DriverEventQueueBridge* self = static_cast<DriverEventQueueBridge*>(queue ? queue->context : nullptr);
+	return self && event ? self->pushOutbound(*event) : false;
+}
+
+bool DriverEventQueueBridge::_tryPopOutbound(GBASIONetEventQueue* queue, GBASIONetEvent* outEvent) {
+	DriverEventQueueBridge* self = static_cast<DriverEventQueueBridge*>(queue ? queue->context : nullptr);
+	return self ? self->tryPopOutbound(outEvent) : false;
+}
+
+bool DriverEventQueueBridge::_waitPopOutbound(GBASIONetEventQueue* queue, GBASIONetEvent* outEvent, int32_t timeoutMs) {
+	return _waitPop(queue, outEvent, timeoutMs, true);
+}
+
+size_t DriverEventQueueBridge::_sizeOutbound(const GBASIONetEventQueue* queue) {
+	const DriverEventQueueBridge* self = static_cast<const DriverEventQueueBridge*>(queue ? queue->context : nullptr);
+	return self ? self->outboundSize() : 0;
+}
+
+void DriverEventQueueBridge::_wakeOutbound(GBASIONetEventQueue* queue) {
+	UNUSED(queue);
+}
+
+bool DriverEventQueueBridge::_pushInbound(GBASIONetEventQueue* queue, const GBASIONetEvent* event) {
+	DriverEventQueueBridge* self = static_cast<DriverEventQueueBridge*>(queue ? queue->context : nullptr);
+	return self && event ? self->pushInbound(*event) : false;
+}
+
+bool DriverEventQueueBridge::_tryPopInbound(GBASIONetEventQueue* queue, GBASIONetEvent* outEvent) {
+	DriverEventQueueBridge* self = static_cast<DriverEventQueueBridge*>(queue ? queue->context : nullptr);
+	return self ? self->tryPopInbound(outEvent) : false;
+}
+
+bool DriverEventQueueBridge::_waitPopInbound(GBASIONetEventQueue* queue, GBASIONetEvent* outEvent, int32_t timeoutMs) {
+	return _waitPop(queue, outEvent, timeoutMs, false);
+}
+
+size_t DriverEventQueueBridge::_sizeInbound(const GBASIONetEventQueue* queue) {
+	const DriverEventQueueBridge* self = static_cast<const DriverEventQueueBridge*>(queue ? queue->context : nullptr);
+	return self ? self->inboundSize() : 0;
+}
+
+void DriverEventQueueBridge::_wakeInbound(GBASIONetEventQueue* queue) {
+	UNUSED(queue);
+}
+
+bool DriverEventQueueBridge::_waitPop(GBASIONetEventQueue* queue, GBASIONetEvent* outEvent, int32_t timeoutMs, bool outbound) {
+	DriverEventQueueBridge* self = static_cast<DriverEventQueueBridge*>(queue ? queue->context : nullptr);
+	if (!self || !outEvent) {
+		return false;
+	}
+	const auto start = std::chrono::steady_clock::now();
+	for (;;) {
+		if ((outbound && self->tryPopOutbound(outEvent)) || (!outbound && self->tryPopInbound(outEvent))) {
 			return true;
+		}
+		if (timeoutMs == 0) {
+			return false;
+		}
+		if (timeoutMs > 0) {
+			const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
+			if (elapsed >= timeoutMs) {
+				return false;
+			}
 		}
 		std::this_thread::sleep_for(std::chrono::milliseconds(1));
 	}
-	return self->tryPop(outEvent);
-}
-
-size_t DriverEventQueueBridge::_size(const GBASIONetEventQueue* queue) {
-	const DriverEventQueueBridge* self = static_cast<const DriverEventQueueBridge*>(queue ? queue->context : nullptr);
-	return self ? self->size() : 0;
-}
-
-void DriverEventQueueBridge::_wake(GBASIONetEventQueue* queue) {
-	(void) queue;
 }
