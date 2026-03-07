@@ -87,6 +87,14 @@ bool TcpSession::connect(const SessionConnectRequest& request) {
 	m_port = 0;
 	m_endpoint = request.endpoint.trimmed();
 	m_authToken = request.authToken;
+	m_protocolVersion = request.options.value(QStringLiteral("protocolVersion"), 1).toInt();
+	if (m_protocolVersion <= 0) {
+		m_protocolVersion = 1;
+	}
+	m_clientName = request.options.value(QStringLiteral("clientName")).toString().trimmed();
+	m_buildTag = request.options.value(QStringLiteral("buildTag")).toString().trimmed();
+	m_handshakeCompleted = false;
+	m_expectedServerSequence = -1;
 	m_nextSequence = 0;
 	m_heartbeatCounter = 0;
 	m_room = SessionRoom();
@@ -156,10 +164,17 @@ void TcpSession::disconnect() {
 	m_receiveBuffer.clear();
 	m_room = SessionRoom();
 	m_localPeer = SessionPeer();
+	m_handshakeCompleted = false;
+	m_expectedServerSequence = -1;
 	_setState(SessionState::Disconnected);
 }
 
 bool TcpSession::createRoom(const SessionCreateRoomRequest& request) {
+	if (m_state != SessionState::Connected) {
+		_dispatchProtocolError(10, QStringLiteral("createRoom requires Connected state"), NetplayErrorCategory::ProtocolMismatch);
+		return false;
+	}
+
 	QVariantMap intent;
 	intent[QStringLiteral("intent")] = QStringLiteral("createRoom");
 	intent[QStringLiteral("roomName")] = request.roomName;
@@ -169,6 +184,11 @@ bool TcpSession::createRoom(const SessionCreateRoomRequest& request) {
 }
 
 bool TcpSession::joinRoom(const SessionJoinRoomRequest& request) {
+	if (m_state != SessionState::Connected) {
+		_dispatchProtocolError(11, QStringLiteral("joinRoom requires Connected state"), NetplayErrorCategory::ProtocolMismatch);
+		return false;
+	}
+
 	QVariantMap intent;
 	intent[QStringLiteral("intent")] = QStringLiteral("joinRoom");
 	intent[QStringLiteral("roomId")] = request.roomId;
@@ -188,6 +208,15 @@ void TcpSession::leaveRoom() {
 }
 
 bool TcpSession::sendEvent(const SessionEventEnvelope& event) {
+	if (m_state != SessionState::InRoom || !_hasActiveRoom()) {
+		_dispatchProtocolError(12, QStringLiteral("publishLinkEvent requires active room"), NetplayErrorCategory::ProtocolMismatch);
+		return false;
+	}
+	if (m_localPeer.peerId.isEmpty()) {
+		_dispatchProtocolError(13, QStringLiteral("publishLinkEvent requires local player assignment"), NetplayErrorCategory::ProtocolMismatch);
+		return false;
+	}
+
 	QVariantMap intent;
 	intent[QStringLiteral("intent")] = QStringLiteral("publishLinkEvent");
 	intent[QStringLiteral("eventId")] = event.eventId;
@@ -208,7 +237,18 @@ void TcpSession::_onConnected() {
 
 	QVariantMap helloIntent;
 	helloIntent[QStringLiteral("intent")] = QStringLiteral("hello");
+	helloIntent[QStringLiteral("protocolVersion")] = m_protocolVersion;
 	helloIntent[QStringLiteral("authToken")] = m_authToken;
+	QVariantMap metadata;
+	if (!m_clientName.isEmpty()) {
+		metadata[QStringLiteral("clientName")] = m_clientName;
+	}
+	if (!m_buildTag.isEmpty()) {
+		metadata[QStringLiteral("buildTag")] = m_buildTag;
+	}
+	if (!metadata.isEmpty()) {
+		helloIntent[QStringLiteral("metadata")] = metadata;
+	}
 	_sendIntent(helloIntent);
 }
 
@@ -218,6 +258,8 @@ void TcpSession::_onDisconnected() {
 	m_receiveBuffer.clear();
 	m_room = SessionRoom();
 	m_localPeer = SessionPeer();
+	m_handshakeCompleted = false;
+	m_expectedServerSequence = -1;
 	if (m_state != SessionState::Error) {
 		_setState(SessionState::Disconnected);
 	}
@@ -360,7 +402,29 @@ void TcpSession::_handleFrame(const QByteArray& payload) {
 
 	QVariantMap event = decoded.payload;
 	QString kind = decoded.kind;
+	qint64 serverSequence = -1;
+	if (event.contains(QStringLiteral("serverSequence"))) {
+		bool ok = false;
+		serverSequence = event.value(QStringLiteral("serverSequence")).toLongLong(&ok);
+		if (!ok || serverSequence < 0) {
+			_dispatchProtocolError(14, QStringLiteral("Invalid server sequence"), NetplayErrorCategory::MalformedMessage, -1, m_expectedServerSequence, event);
+			return;
+		}
+		if (m_expectedServerSequence >= 0 && serverSequence != m_expectedServerSequence) {
+			_dispatchProtocolError(15, QStringLiteral("Unexpected server sequence"), NetplayErrorCategory::ProtocolMismatch, serverSequence, m_expectedServerSequence, event);
+			return;
+		}
+		m_expectedServerSequence = serverSequence + 1;
+	}
+
+	if (!m_handshakeCompleted && kind != QStringLiteral("roomJoined") && kind != QStringLiteral("playerAssigned")
+			&& kind != QStringLiteral("heartbeatAck") && kind != QStringLiteral("error") && kind != QStringLiteral("disconnected")) {
+		_dispatchProtocolError(18, QStringLiteral("Received non-handshake event before handshake completion"), NetplayErrorCategory::ProtocolMismatch, serverSequence, -1, event);
+		return;
+	}
+
 	if (kind == QStringLiteral("roomJoined")) {
+		m_handshakeCompleted = true;
 		m_room.roomId = event.value(QStringLiteral("roomId")).toString();
 		m_room.roomName = event.value(QStringLiteral("roomName")).toString();
 		m_room.maxPeers = event.value(QStringLiteral("maxPlayers")).toInt();
@@ -368,12 +432,17 @@ void TcpSession::_handleFrame(const QByteArray& payload) {
 		return;
 	}
 	if (kind == QStringLiteral("playerAssigned")) {
+		m_handshakeCompleted = true;
 		m_localPeer.peerId = QString::number(event.value(QStringLiteral("playerId")).toInt());
 		m_localPeer.displayName = event.value(QStringLiteral("displayName")).toString();
 		m_localPeer.isLocal = true;
 		return;
 	}
 	if (kind == QStringLiteral("peerJoined")) {
+		if (!_hasActiveRoom()) {
+			_dispatchProtocolError(19, QStringLiteral("peerJoined without active room"), NetplayErrorCategory::ProtocolMismatch, serverSequence, -1, event);
+			return;
+		}
 		SessionPeer peer;
 		peer.peerId = QString::number(event.value(QStringLiteral("playerId")).toInt());
 		peer.displayName = event.value(QStringLiteral("displayName")).toString();
@@ -392,6 +461,10 @@ void TcpSession::_handleFrame(const QByteArray& payload) {
 		return;
 	}
 	if (kind == QStringLiteral("inboundLinkEvent")) {
+		if (!_hasActiveRoom()) {
+			_dispatchProtocolError(20, QStringLiteral("inboundLinkEvent without active room"), NetplayErrorCategory::ProtocolMismatch, serverSequence, -1, event);
+			return;
+		}
 		SessionEventEnvelope envelope;
 		envelope.eventId = event.value(QStringLiteral("eventId")).toString();
 		envelope.sourcePeerId = event.value(QStringLiteral("sourcePeerId")).toString();
@@ -420,7 +493,7 @@ void TcpSession::_handleFrame(const QByteArray& payload) {
 				|| lowerMessage.contains(QStringLiteral("denied"))) {
 			category = NetplayErrorCategory::RoomRejectedOrFull;
 		}
-		_dispatchProtocolError(code, message, category, event.value(QStringLiteral("sequence")).toLongLong(), -1, event);
+		_dispatchProtocolError(code, message, category, serverSequence, -1, event);
 		_setState(SessionState::Error);
 		return;
 	}
@@ -428,12 +501,16 @@ void TcpSession::_handleFrame(const QByteArray& payload) {
 		QVariantMap details = event;
 		details[QStringLiteral("reason")]
 			= static_cast<int>(_disconnectReasonFromString(event.value(QStringLiteral("reason")).toString()));
-		_dispatchProtocolError(8, event.value(QStringLiteral("message")).toString(), NetplayErrorCategory::ConnectionFailure, -1, -1, details);
+		_dispatchProtocolError(8, event.value(QStringLiteral("message")).toString(), NetplayErrorCategory::ConnectionFailure, serverSequence, -1, details);
 		disconnect();
 		return;
 	}
 
-	_dispatchProtocolError(9, QStringLiteral("Unknown server event kind"), NetplayErrorCategory::ProtocolMismatch, event.value(QStringLiteral("sequence")).toLongLong(), -1, event);
+	_dispatchProtocolError(9, QStringLiteral("Unknown server event kind"), NetplayErrorCategory::ProtocolMismatch, serverSequence, -1, event);
+}
+
+bool TcpSession::_hasActiveRoom() const {
+	return !m_room.roomId.isEmpty();
 }
 
 void TcpSession::_dispatchProtocolError(int code, const QString& message, NetplayErrorCategory category, qint64 sequence, qint64 expectedSequence, const QVariantMap& details) {
