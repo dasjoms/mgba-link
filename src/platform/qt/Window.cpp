@@ -473,7 +473,7 @@ QString Window::multiplayerStatusText(const MultiplayerController* multiplayer) 
 			.arg(youText);
 	}
 
-	const int localPlayers = multiplayer->attached();
+	const int localPlayers = const_cast<MultiplayerController*>(multiplayer)->attached();
 	if (localPlayers > 1) {
 		return tr("Multiplayer: local only | Players: %1/4").arg(localPlayers);
 	}
@@ -486,6 +486,21 @@ void Window::refreshMultiplayerStatusDisplay() {
 	}
 	MultiplayerController* multiplayer = m_controller ? m_controller->multiplayerController() : nullptr;
 	m_multiplayerStatusLabel->setText(multiplayerStatusText(multiplayer));
+}
+
+void Window::notifyRemoteSessionFailure(const QString& state, const QString& userMessage, int code, const QString& category, bool terminal) {
+	const QString details = tr("State: %1 | category: %2 | code: %3")
+		.arg(state)
+		.arg(category)
+		.arg(code);
+	statusBar()->showMessage(tr("Remote relay failure: %1 (%2)").arg(userMessage, details), 12000);
+	if (!m_multiplayerStatusLabel) {
+		return;
+	}
+	m_multiplayerStatusLabel->setText(tr("Remote relay failure: %1").arg(state));
+	if (terminal) {
+		QMessageBox::warning(this, tr("Remote relay failure"), tr("%1\n\n%2").arg(userMessage, details));
+	}
 }
 
 MultiplayerController* Window::multiplayerControllerForNetplayUi(bool requireController) const {
@@ -2405,6 +2420,7 @@ void Window::setController(CoreController* controller, const QString& fname) {
 		connect(multiplayer, &MultiplayerController::gameAttached, this, &Window::refreshMultiplayerStatusDisplay);
 		connect(multiplayer, &MultiplayerController::gameDetached, this, &Window::refreshMultiplayerStatusDisplay);
 		connect(multiplayer, &MultiplayerController::remoteSessionStatusChanged, this, &Window::refreshMultiplayerStatusDisplay);
+		connect(multiplayer, &MultiplayerController::remoteSessionFailureNotified, this, &Window::notifyRemoteSessionFailure);
 	}
 
 #ifdef M_CORE_GBA
