@@ -102,7 +102,7 @@ The adapter MUST enforce all of the following:
 
 | State | Trigger | Callback-facing behavior |
 |---|---|---|
-| `PeerDetached` | Explicit peer leave or timeout mapped to detach | Recompute `connectedDevices`/readiness; in-flight transfer may complete with fallback for missing peer. |
+| `PeerDetached` | Explicit peer leave or timeout mapped to detach | Recompute cached `connectedDevices`/readiness between transfers only. During an armed transfer generation, topology changes are treated as deterministic protocol failure and transition to degraded state. |
 | `SessionDisconnected` | Transport closed/reset | `connectedDevices=0`; `start` returns `false`; `finish*` returns fallback values. |
 | `ProtocolError` | Malformed/out-of-order envelope violating contract | Transition to degraded/error mode; reject new `start`; `finish*` uses fallback; require reset/rejoin to recover. |
 

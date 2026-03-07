@@ -32,6 +32,7 @@ struct GBASIONetDriver {
 	enum GBASIOMode mode;
 	int roomPlayerCount;
 	int localPlayerId;
+	uint8_t attachedPlayerMask;
 	uint16_t lastSIOCNT;
 	uint16_t lastRCNT;
 	uint16_t multiplayerData[4];

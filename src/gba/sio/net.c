@@ -16,6 +16,7 @@ DECL_BITFIELD(GBASIONetSerializedFlags, uint32_t);
 DECL_BITS(GBASIONetSerializedFlags, DriverMode, 0, 4);
 DECL_BITS(GBASIONetSerializedFlags, DriverState, 4, 4);
 DECL_BIT(GBASIONetSerializedFlags, TransferArmed, 8);
+DECL_BITS(GBASIONetSerializedFlags, AttachedPlayerMask, 9, 4);
 
 struct GBASIONetSerializedState {
 	uint32_t version;
@@ -50,6 +51,9 @@ static bool GBASIONetDriverStart(struct GBASIODriver* driver);
 static void GBASIONetDriverFinishMultiplayer(struct GBASIODriver* driver, uint16_t data[4]);
 static uint8_t GBASIONetDriverFinishNormal8(struct GBASIODriver* driver);
 static uint32_t GBASIONetDriverFinishNormal32(struct GBASIODriver* driver);
+
+static bool _isTopologyEvent(const struct GBASIONetEvent* event);
+static bool _applyTopologyEvent(struct GBASIONetDriver* net, const struct GBASIONetEvent* event);
 
 static size_t _expectedPayloadSize(enum GBASIOMode mode) {
 	switch (mode) {
@@ -119,6 +123,10 @@ static bool _pollInboundForCurrentTransfer(struct GBASIONetDriver* net) {
 
 	struct GBASIONetEvent event;
 	while (GBASIONetEventQueueTryPop(net->inboundQueue, &event)) {
+		if (_isTopologyEvent(&event)) {
+			_applyTopologyEvent(net, &event);
+			continue;
+		}
 		if (event.type != GBA_SIO_NET_EV_TRANSFER_RESULT) {
 			continue;
 		}
@@ -152,6 +160,7 @@ void GBASIONetDriverCreate(struct GBASIONetDriver* driver) {
 	driver->state = GBA_SIO_NET_DISCONNECTED;
 	driver->mode = (enum GBASIOMode) -1;
 	driver->roomPlayerCount = 1;
+	driver->attachedPlayerMask = 0x1;
 	driver->nextOutboundSequence = 1;
 }
 
@@ -178,6 +187,7 @@ static void GBASIONetDriverReset(struct GBASIODriver* driver) {
 	net->mode = driver->p ? driver->p->mode : (enum GBASIOMode) -1;
 	net->roomPlayerCount = 1;
 	net->localPlayerId = 0;
+	net->attachedPlayerMask = 0x1;
 	net->lastSIOCNT = 0;
 	net->lastRCNT = RCNT_INITIAL;
 	memset(net->multiplayerData, 0xFF, sizeof(net->multiplayerData));
@@ -226,6 +236,7 @@ static bool GBASIONetDriverLoadState(struct GBASIODriver* driver, const void* da
 	}
 	net->state = driverState;
 	net->transferArmed = GBASIONetSerializedFlagsGetTransferArmed(flags);
+	net->attachedPlayerMask = GBASIONetSerializedFlagsGetAttachedPlayerMask(flags) & ((1U << MAX_GBAS) - 1);
 
 	LOAD_32LE(net->roomPlayerCount, 0, &state->roomPlayerCount);
 	if (net->roomPlayerCount < 1 || net->roomPlayerCount > MAX_GBAS) {
@@ -234,6 +245,9 @@ static bool GBASIONetDriverLoadState(struct GBASIODriver* driver, const void* da
 	LOAD_32LE(net->localPlayerId, 0, &state->localPlayerId);
 	if (net->localPlayerId < 0 || net->localPlayerId >= MAX_GBAS) {
 		net->localPlayerId = 0;
+	}
+	if (net->attachedPlayerMask == 0) {
+		net->attachedPlayerMask = 1U << net->localPlayerId;
 	}
 	LOAD_16LE(net->lastSIOCNT, 0, &state->lastSIOCNT);
 	LOAD_16LE(net->lastRCNT, 0, &state->lastRCNT);
@@ -258,6 +272,7 @@ static void GBASIONetDriverSaveState(struct GBASIODriver* driver, void** stateOu
 	flags = GBASIONetSerializedFlagsSetDriverMode(flags, net->mode & 0xF);
 	flags = GBASIONetSerializedFlagsSetDriverState(flags, net->state & 0xF);
 	flags = GBASIONetSerializedFlagsSetTransferArmed(flags, net->transferArmed);
+	flags = GBASIONetSerializedFlagsSetAttachedPlayerMask(flags, net->attachedPlayerMask & ((1U << MAX_GBAS) - 1));
 	STORE_32LE(flags, 0, &state->flags);
 	STORE_32LE(net->roomPlayerCount, 0, &state->roomPlayerCount);
 	STORE_32LE(net->localPlayerId, 0, &state->localPlayerId);
@@ -305,6 +320,60 @@ static bool GBASIONetDriverHandlesMode(struct GBASIODriver* driver, enum GBASIOM
 	default:
 		return false;
 	}
+}
+
+static int _popcountMask(uint8_t mask) {
+	int count = 0;
+	for (int i = 0; i < MAX_GBAS; ++i) {
+		if (mask & (1U << i)) {
+			++count;
+		}
+	}
+	return count;
+}
+
+static bool _isTopologyEvent(const struct GBASIONetEvent* event) {
+	return event->type == GBA_SIO_NET_EV_PEER_ATTACH || event->type == GBA_SIO_NET_EV_PEER_DETACH;
+}
+
+static bool _applyTopologyEvent(struct GBASIONetDriver* net, const struct GBASIONetEvent* event) {
+	int playerId = -1;
+	if (event->type == GBA_SIO_NET_EV_PEER_ATTACH) {
+		playerId = event->peerAttach.playerId;
+	} else if (event->type == GBA_SIO_NET_EV_PEER_DETACH) {
+		playerId = event->peerDetach.playerId;
+	}
+	if (playerId < 0 || playerId >= MAX_GBAS) {
+		_setProtocolError(net, "peer topology event has invalid player ID");
+		return false;
+	}
+
+	uint8_t bit = (uint8_t) (1U << playerId);
+	if (net->transferArmed) {
+		_setProtocolError(net, "peer topology changed during active transfer");
+		return false;
+	}
+	if (event->type == GBA_SIO_NET_EV_PEER_ATTACH) {
+		net->attachedPlayerMask |= bit;
+	} else {
+		net->attachedPlayerMask &= ~bit;
+		if (playerId == net->localPlayerId || net->attachedPlayerMask == 0) {
+			_setProtocolError(net, "peer detach removed local player topology");
+			return false;
+		}
+	}
+
+	net->roomPlayerCount = _popcountMask(net->attachedPlayerMask);
+	if (net->roomPlayerCount < 1) {
+		net->roomPlayerCount = 1;
+	}
+	if (net->roomPlayerCount > MAX_GBAS) {
+		net->roomPlayerCount = MAX_GBAS;
+	}
+	if (net->state >= GBA_SIO_NET_IN_ROOM && !net->protocolError) {
+		net->state = GBA_SIO_NET_IN_ROOM;
+	}
+	return true;
 }
 
 static int GBASIONetDriverConnectedDevices(struct GBASIODriver* driver) {
@@ -359,6 +428,9 @@ static uint16_t GBASIONetDriverWriteRCNT(struct GBASIODriver* driver, uint16_t v
 
 static bool GBASIONetDriverStart(struct GBASIODriver* driver) {
 	struct GBASIONetDriver* net = (struct GBASIONetDriver*) driver;
+	if (net->protocolError || net->state < GBA_SIO_NET_IN_ROOM) {
+		return false;
+	}
 	if (!net->transferArmed) {
 		++net->transferOrdinal;
 		net->transferArmed = true;
