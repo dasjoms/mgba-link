@@ -19,6 +19,7 @@ DECL_BIT(GBASIONetSerializedFlags, TransferArmed, 8);
 DECL_BITS(GBASIONetSerializedFlags, AttachedPlayerMask, 9, 4);
 
 struct GBASIONetSerializedState {
+	uint32_t driverId;
 	uint32_t version;
 	GBASIONetSerializedFlags flags;
 	int32_t roomPlayerCount;
@@ -29,8 +30,10 @@ struct GBASIONetSerializedState {
 	uint8_t normalData8;
 	uint8_t reserved8[3];
 	uint32_t normalData32;
+	uint32_t committedTransferOrdinal;
 	uint32_t transferOrdinal;
-	uint8_t reserved[24];
+	int64_t nextOutboundSequence;
+	uint8_t reserved[8];
 };
 static_assert(sizeof(struct GBASIONetSerializedState) == GBA_SIO_NET_SAVESTATE_SIZE,
 	"GBA net savestate struct sized wrong");
@@ -214,6 +217,12 @@ static bool GBASIONetDriverLoadState(struct GBASIODriver* driver, const void* da
 
 	const struct GBASIONetSerializedState* state = data;
 	struct GBASIONetDriver* net = (struct GBASIONetDriver*) driver;
+	uint32_t driverId;
+	LOAD_32LE(driverId, 0, &state->driverId);
+	if (driverId != DRIVER_ID) {
+		mLOG(GBA_SIO, WARN, "Invalid net save state driver ID: expected %08X, got %08X", DRIVER_ID, driverId);
+		return false;
+	}
 
 	uint32_t version;
 	LOAD_32LE(version, 0, &state->version);
@@ -234,6 +243,12 @@ static bool GBASIONetDriverLoadState(struct GBASIODriver* driver, const void* da
 	if (driverState > GBA_SIO_NET_DEGRADED) {
 		driverState = GBA_SIO_NET_DEGRADED;
 	}
+
+	if (net->state >= GBA_SIO_NET_IN_ROOM || driverState >= GBA_SIO_NET_IN_ROOM) {
+		mLOG(GBA_SIO, WARN, "Refusing to load net savestate while connected (v1 policy)");
+		return false;
+	}
+
 	net->state = driverState;
 	net->transferArmed = GBASIONetSerializedFlagsGetTransferArmed(flags);
 	net->attachedPlayerMask = GBASIONetSerializedFlagsGetAttachedPlayerMask(flags) & ((1U << MAX_GBAS) - 1);
@@ -256,9 +271,10 @@ static bool GBASIONetDriverLoadState(struct GBASIODriver* driver, const void* da
 	}
 	net->normalData8 = state->normalData8;
 	LOAD_32LE(net->normalData32, 0, &state->normalData32);
+	LOAD_32LE(net->committedTransferOrdinal, 0, &state->committedTransferOrdinal);
 	LOAD_32LE(net->transferOrdinal, 0, &state->transferOrdinal);
-	net->committedTransferOrdinal = net->transferOrdinal;
-	net->committedTransferReady = false;
+	LOAD_64LE(net->nextOutboundSequence, 0, &state->nextOutboundSequence);
+	net->committedTransferReady = net->transferArmed && net->committedTransferOrdinal == net->transferOrdinal;
 	net->protocolError = false;
 	return true;
 }
@@ -267,6 +283,7 @@ static void GBASIONetDriverSaveState(struct GBASIODriver* driver, void** stateOu
 	struct GBASIONetDriver* net = (struct GBASIONetDriver*) driver;
 	struct GBASIONetSerializedState* state = calloc(1, sizeof(*state));
 
+	STORE_32LE(DRIVER_ID, 0, &state->driverId);
 	STORE_32LE(DRIVER_STATE_VERSION, 0, &state->version);
 	GBASIONetSerializedFlags flags = 0;
 	flags = GBASIONetSerializedFlagsSetDriverMode(flags, net->mode & 0xF);
@@ -283,7 +300,9 @@ static void GBASIONetDriverSaveState(struct GBASIODriver* driver, void** stateOu
 	}
 	state->normalData8 = net->normalData8;
 	STORE_32LE(net->normalData32, 0, &state->normalData32);
+	STORE_32LE(net->committedTransferOrdinal, 0, &state->committedTransferOrdinal);
 	STORE_32LE(net->transferOrdinal, 0, &state->transferOrdinal);
+	STORE_64LE(net->nextOutboundSequence, 0, &state->nextOutboundSequence);
 
 	*stateOut = state;
 	*sizeOut = sizeof(*state);
