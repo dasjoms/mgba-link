@@ -571,7 +571,9 @@ void Window::openSettingsWindow(SettingsView::Page page) {
 		m_scripting->openAutorunEdit();
 	});
 #endif
+#if defined(BUILD_GL) || defined(BUILD_GLES2)
 	connect(this, &Window::shaderSelectorAdded, settingsWindow, &SettingsView::setShaderSelector);
+#endif
 	openView(settingsWindow);
 	settingsWindow->selectPage(page);
 }
