@@ -176,6 +176,14 @@ Note that you should not do a `make install` on macOS, as it will not work prope
 
 For Link Net v1 Windows netplay setup (relay host, Qt client user, or combined host+client), see `docs/netplay/setup-windows-v1.md`.
 
+For scripted bootstrap flows on Windows, use the PowerShell scripts under `scripts/windows/`:
+
+- `bootstrap-relay.ps1`: verifies Go and builds relay to `out/relay/relay.exe`.
+- `bootstrap-client-msys2.ps1`: validates MSYS2, installs required packages, and builds mGBA Qt in `out/mgba/build`.
+- `bootstrap-all.ps1`: runs relay and client bootstrap in sequence.
+
+Each script supports `-WhatIf` (dry-run) and `-SkipBuild` (dependency/tooling setup without build).
+
 ##### MSYS2
 
 To build on Windows for development, using MSYS2 is recommended. Follow the installation steps found on their [website](https://msys2.github.io). Make sure you're running the 32-bit version ("MSYS2 MinGW 32-bit") (or the 64-bit version "MSYS2 MinGW 64-bit" if you want to build for x86_64) and run this additional command (including the braces) to install the needed dependencies (please note that this involves downloading over 1100MiB of packages, so it will take a long time):

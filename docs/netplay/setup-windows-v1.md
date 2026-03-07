@@ -5,6 +5,31 @@ This guide provides copy-pasteable install and smoke-check steps for clean Windo
 - Relay protocol and behavior reference: `docs/netplay/protocol-v1.md`
 - Scenario-based validation matrix: `docs/netplay/validation-v1.md`
 
+## Automation Scripts (PowerShell)
+
+For repeatable setup on developer machines, use scripts in `scripts/windows/` from repository root:
+
+```powershell
+# Relay only
+powershell -ExecutionPolicy Bypass -File .\scripts\windows\bootstrap-relay.ps1
+
+# Client (MSYS2 + mGBA Qt) only
+powershell -ExecutionPolicy Bypass -File .\scripts\windows\bootstrap-client-msys2.ps1
+
+# Combined relay + client setup
+powershell -ExecutionPolicy Bypass -File .\scripts\windows\bootstrap-all.ps1
+```
+
+Optional flags for all three scripts:
+
+- `-WhatIf`: dry-run; prints actions without executing commands.
+- `-SkipBuild`: performs verification/setup only and skips compile steps.
+
+Predictable outputs:
+
+- Relay binary: `out/relay/relay.exe`
+- mGBA build tree: `out/mgba/build` (Qt binary expected at `out/mgba/build/mgba-qt.exe`)
+
 ## Server Hoster (relay-only)
 
 ### Prerequisites
