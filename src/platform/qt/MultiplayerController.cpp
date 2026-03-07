@@ -77,6 +77,82 @@ QByteArray _encodeDriverEventPayload(const GBASIONetEvent& event) {
 	return payload;
 }
 
+bool _decodeDriverEventPayload(const QByteArray& payload, GBASIONetEvent* outEvent) {
+	if (!outEvent) {
+		return false;
+	}
+
+	QDataStream stream(payload);
+	stream.setByteOrder(QDataStream::LittleEndian);
+
+	quint8 payloadVersion = 0;
+	quint8 rawType = 0;
+	qint32 senderPlayerId = -1;
+	qint64 sequence = -1;
+	stream >> payloadVersion;
+	stream >> rawType;
+	stream >> senderPlayerId;
+	stream >> sequence;
+	if (stream.status() != QDataStream::Ok || payloadVersion != 1) {
+		return false;
+	}
+
+	GBASIONetEvent event = {};
+	event.type = static_cast<GBASIONetEventType>(rawType);
+	event.senderPlayerId = senderPlayerId;
+	event.sequence = sequence;
+
+	switch (event.type) {
+	case GBA_SIO_NET_EV_MODE_SET:
+		stream >> event.modeSet.playerId;
+		stream >> event.modeSet.mode;
+		break;
+	case GBA_SIO_NET_EV_TRANSFER_START:
+		stream >> event.transferStart.playerId;
+		stream >> event.transferStart.mode;
+		stream >> event.transferStart.finishCycle;
+		break;
+	case GBA_SIO_NET_EV_TRANSFER_RESULT: {
+		stream >> event.transferResult.playerId;
+		stream >> event.transferResult.tickMarker;
+		quint32 payloadSize = 0;
+		stream >> payloadSize;
+		if (stream.status() != QDataStream::Ok) {
+			return false;
+		}
+		if (payload.size() < stream.device()->pos() + payloadSize) {
+			return false;
+		}
+		event.transferResult.payload = reinterpret_cast<const uint8_t*>(payload.constData() + stream.device()->pos());
+		event.transferResult.payloadSize = payloadSize;
+		stream.skipRawData(static_cast<int>(payloadSize));
+		break;
+	}
+	case GBA_SIO_NET_EV_HARD_SYNC:
+		stream >> event.hardSync.tickMarker;
+		break;
+	case GBA_SIO_NET_EV_PEER_ATTACH:
+		stream >> event.peerAttach.playerId;
+		break;
+	case GBA_SIO_NET_EV_PEER_DETACH:
+		stream >> event.peerDetach.playerId;
+		break;
+	case GBA_SIO_NET_EV_SESSION_FAILURE:
+		stream >> event.sessionFailure.kind;
+		stream >> event.sessionFailure.code;
+		break;
+	default:
+		return false;
+	}
+
+	if (stream.status() != QDataStream::Ok || !stream.atEnd()) {
+		return false;
+	}
+
+	*outEvent = event;
+	return true;
+}
+
 QString _layerTag(QGBA::Netplay::NetplayFailureLayer layer) {
 	return QString::fromLatin1(QGBA::Netplay::netplayFailureLayerName(layer));
 }
@@ -677,10 +753,43 @@ void MultiplayerController::onRemoteSessionInboundLinkEvent(const Netplay::Sessi
 	if (event.type != Netplay::SessionEventType::LinkInput) {
 		return;
 	}
-	const int localPlayerId = (m_remotePlayerId >= 0 && m_remotePlayerId < MAX_GBAS) ? m_remotePlayerId : 0;
-	const int senderPlayerId = parseRemotePlayerId(event.sourcePeerId);
-	const int32_t tickMarker = static_cast<int32_t>(event.serverSequence >= 0 ? event.serverSequence : event.sequence);
-	m_remoteDriverBridge->enqueueTransferResult(senderPlayerId, localPlayerId, event.sequence, tickMarker, event.payload);
+	GBASIONetEvent decoded = {};
+	if (!_decodeDriverEventPayload(event.payload, &decoded)) {
+		emitControllerRemoteSessionError(23, QStringLiteral("Malformed inbound link event payload"), Netplay::NetplayErrorCategory::MalformedMessage, QStringLiteral("decodeLinkInput"));
+		if (m_remoteDriverBridge) {
+			m_remoteDriverBridge->enqueueSessionFailure(GBA_SIO_NET_FAIL_PROTOCOL, 23, event.sequence);
+		}
+		return;
+	}
+
+	switch (decoded.type) {
+	case GBA_SIO_NET_EV_TRANSFER_RESULT:
+		m_remoteDriverBridge->enqueueTransferResult(decoded.senderPlayerId, decoded.transferResult.playerId, decoded.sequence, decoded.transferResult.tickMarker,
+			QByteArray(reinterpret_cast<const char*>(decoded.transferResult.payload), static_cast<int>(decoded.transferResult.payloadSize)));
+		break;
+	case GBA_SIO_NET_EV_MODE_SET:
+		m_remoteDriverBridge->enqueueModeSet(decoded.senderPlayerId, decoded.modeSet.playerId, decoded.modeSet.mode, decoded.sequence);
+		break;
+	case GBA_SIO_NET_EV_TRANSFER_START:
+		m_remoteDriverBridge->enqueueTransferStart(decoded.senderPlayerId, decoded.transferStart.playerId, decoded.transferStart.mode, decoded.transferStart.finishCycle, decoded.sequence);
+		break;
+	case GBA_SIO_NET_EV_HARD_SYNC:
+		m_remoteDriverBridge->enqueueHardSync(decoded.senderPlayerId, decoded.hardSync.tickMarker, decoded.sequence);
+		break;
+	case GBA_SIO_NET_EV_PEER_ATTACH:
+		m_remoteDriverBridge->enqueuePeerAttach(decoded.senderPlayerId, decoded.peerAttach.playerId, decoded.sequence);
+		break;
+	case GBA_SIO_NET_EV_PEER_DETACH:
+		m_remoteDriverBridge->enqueuePeerDetach(decoded.senderPlayerId, decoded.peerDetach.playerId, decoded.sequence);
+		break;
+	case GBA_SIO_NET_EV_SESSION_FAILURE:
+		m_remoteDriverBridge->enqueueSessionFailure(decoded.senderPlayerId, decoded.sessionFailure.kind, decoded.sessionFailure.code, decoded.sequence);
+		break;
+	default:
+		emitControllerRemoteSessionError(24, QStringLiteral("Unsupported inbound link event type"), Netplay::NetplayErrorCategory::MalformedMessage, QStringLiteral("routeLinkInput"));
+		m_remoteDriverBridge->enqueueSessionFailure(GBA_SIO_NET_FAIL_PROTOCOL, 24, event.sequence);
+		return;
+	}
 	LOG(QT, INFO) << tr("Remote inbound queue depth=%0 sequence=%1 serverSequence=%2")
 		.arg(static_cast<qulonglong>(m_remoteDriverBridge->pendingInboundDepth()))
 		.arg(event.sequence)

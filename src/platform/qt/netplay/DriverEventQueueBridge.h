@@ -25,9 +25,15 @@ public:
 	GBASIONetEventQueue* inboundQueue();
 
 	bool enqueueTransferResult(int senderPlayerId, int targetPlayerId, int64_t sequence, int32_t tickMarker, const QByteArray& payload);
+	bool enqueueModeSet(int senderPlayerId, int playerId, int mode, int64_t sequence);
+	bool enqueueTransferStart(int senderPlayerId, int playerId, int mode, int32_t finishCycle, int64_t sequence);
+	bool enqueueHardSync(int senderPlayerId, int32_t tickMarker, int64_t sequence);
 	bool enqueuePeerAttach(int playerId, int64_t sequence);
+	bool enqueuePeerAttach(int senderPlayerId, int playerId, int64_t sequence);
 	bool enqueuePeerDetach(int playerId, int64_t sequence);
+	bool enqueuePeerDetach(int senderPlayerId, int playerId, int64_t sequence);
 	bool enqueueSessionFailure(GBASIONetSessionFailureKind kind, int code, int64_t sequence);
+	bool enqueueSessionFailure(int senderPlayerId, GBASIONetSessionFailureKind kind, int code, int64_t sequence);
 	bool tryDequeueOutbound(GBASIONetEvent* outEvent);
 	size_t pendingOutboundDepth() const;
 	size_t pendingInboundDepth() const;
