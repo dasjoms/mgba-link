@@ -151,6 +151,7 @@ set(SOURCE_FILES
 	MemoryView.cpp
 	MessagePainter.cpp
 	MultiplayerController.cpp
+	netplay/TcpSession.cpp
 	ObjView.cpp
 	OpenGLBug.cpp
 	OverrideView.cpp
