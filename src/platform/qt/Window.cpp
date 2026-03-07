@@ -60,6 +60,7 @@
 #include "MemoryView.h"
 #include "MultiplayerController.h"
 #include "netplay/TcpSession.h"
+#include "netplay/SessionConstants.h"
 #include "OverrideView.h"
 #include "ObjView.h"
 #include "PaletteView.h"
@@ -541,7 +542,7 @@ void Window::configureAndStartRemoteSession(bool createRoom) {
 	hostEdit->setPlaceholderText(QStringLiteral("127.0.0.1"));
 
 	portEdit->setRange(1, 65535);
-	portEdit->setValue(existing.port ? existing.port : 5000);
+	portEdit->setValue(existing.port ? existing.port : Netplay::DEFAULT_RELAY_PORT);
 
 	roomEdit->setText(existing.room);
 	secretEdit->setText(existing.sharedSecret);

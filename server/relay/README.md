@@ -20,6 +20,8 @@ cd server/relay
 go run . --bind 0.0.0.0 --port 41000 --secret my-secret
 ```
 
+The Qt netplay client defaults to relay port `41000` on first run, matching this relay default.
+
 Build a standalone binary:
 
 ```bash

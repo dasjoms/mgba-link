@@ -12,6 +12,7 @@
 #include "netplay/DriverEventQueueBridge.h"
 #include "netplay/Session.h"
 #include "netplay/SessionTypes.h"
+#include "netplay/SessionConstants.h"
 
 #ifdef M_CORE_GBA
 #include <mgba/internal/gba/gba.h>
@@ -591,7 +592,7 @@ void MultiplayerController::loadRemoteSessionConfig(const ConfigController* conf
 	RemoteSessionConfig loaded;
 	loaded.host = config->getOption(ConfigController::NETPLAY_SERVER_HOST_KEY, QStringLiteral("127.0.0.1"));
 	bool ok = false;
-	const int portValue = config->getOption(ConfigController::NETPLAY_SERVER_PORT_KEY, 5000).toInt(&ok);
+	const int portValue = config->getOption(ConfigController::NETPLAY_SERVER_PORT_KEY, Netplay::DEFAULT_RELAY_PORT).toInt(&ok);
 	if (ok && portValue > 0 && portValue <= 65535) {
 		loaded.port = static_cast<quint16>(portValue);
 	}

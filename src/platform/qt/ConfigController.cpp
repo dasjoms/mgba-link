@@ -4,6 +4,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 #include "ConfigController.h"
+#include "netplay/SessionConstants.h"
 
 #include "ActionMapper.h"
 #include "CoreController.h"
@@ -156,7 +157,7 @@ ConfigController::ConfigController(QObject* parent)
 #endif
 	mCoreConfigSetDefaultIntValue(&m_config, "preload", true);
 	mCoreConfigSetDefaultValue(&m_config, ConfigController::NETPLAY_SERVER_HOST_KEY, "127.0.0.1");
-	mCoreConfigSetDefaultUIntValue(&m_config, ConfigController::NETPLAY_SERVER_PORT_KEY, 5000);
+	mCoreConfigSetDefaultUIntValue(&m_config, ConfigController::NETPLAY_SERVER_PORT_KEY, Netplay::DEFAULT_RELAY_PORT);
 	mCoreConfigSetDefaultValue(&m_config, ConfigController::NETPLAY_ROOM_KEY, "");
 	mCoreConfigSetDefaultValue(&m_config, ConfigController::NETPLAY_SHARED_SECRET_KEY, "");
 	mCoreConfigMap(&m_config, &m_opts);
