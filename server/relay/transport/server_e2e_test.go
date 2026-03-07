@@ -127,6 +127,27 @@ func assertKindCode(t *testing.T, evt map[string]any, kind string, code int) {
 	}
 }
 
+func setupRelayRoomHarness(t *testing.T) (owner, guest *tcpHarnessClient) {
+	t.Helper()
+	addr := startTCPRelayHarness(t, "", 200*time.Millisecond, 2*time.Second)
+
+	owner = dialHarnessClient(t, addr, "owner")
+	guest = dialHarnessClient(t, addr, "guest")
+
+	owner.hello("")
+	_ = owner.readEvent(time.Second)
+	guest.hello("")
+	_ = guest.readEvent(time.Second)
+
+	owner.sendJSON(`{"intent":"createRoom","clientSequence":1,"roomName":"relay-harness","maxPlayers":2}`)
+	_ = owner.readEvent(time.Second)
+	_ = owner.readEvent(time.Second)
+	guest.sendJSON(`{"intent":"joinRoom","clientSequence":1,"roomId":"relay-harness"}`)
+	_ = guest.readEvent(time.Second)
+	_ = guest.readEvent(time.Second)
+	return owner, guest
+}
+
 func TestRelayE2EHandshakeRoomRebroadcastAndRejections(t *testing.T) {
 	addr := startTCPRelayHarness(t, "top-secret", 200*time.Millisecond, 2*time.Second)
 
@@ -211,6 +232,24 @@ func TestRelayE2EHandshakeRoomRebroadcastAndRejections(t *testing.T) {
 	assertKindCode(t, invalidPayload.readEvent(time.Second), "error", 400)
 	if disc := invalidPayload.readEvent(time.Second); disc["kind"] != "disconnected" {
 		t.Fatalf("invalid-payload expected disconnect, got %#v", disc)
+	}
+}
+
+func TestRelayHarnessMaintainsDeterministicServerSequenceAcrossPeers(t *testing.T) {
+	owner, guest := setupRelayRoomHarness(t)
+
+	owner.sendJSON(`{"intent":"publishLinkEvent","clientSequence":2,"event":{"sequence":1,"senderPlayerId":1,"tickMarker":10,"payload":"AQ=="}}`)
+	ownerInbound1 := owner.readEvent(time.Second)
+	guestInbound1 := guest.readEvent(time.Second)
+	if int(ownerInbound1["serverSequence"].(float64)) != 1 || int(guestInbound1["serverSequence"].(float64)) != 1 {
+		t.Fatalf("expected deterministic serverSequence=1 after first publish, owner=%#v guest=%#v", ownerInbound1, guestInbound1)
+	}
+
+	guest.sendJSON(`{"intent":"publishLinkEvent","clientSequence":2,"event":{"sequence":1,"senderPlayerId":2,"tickMarker":11,"payload":"Ag=="}}`)
+	ownerInbound2 := owner.readEvent(time.Second)
+	guestInbound2 := guest.readEvent(time.Second)
+	if int(ownerInbound2["serverSequence"].(float64)) != 2 || int(guestInbound2["serverSequence"].(float64)) != 2 {
+		t.Fatalf("expected deterministic serverSequence=2 after second publish, owner=%#v guest=%#v", ownerInbound2, guestInbound2)
 	}
 }
 

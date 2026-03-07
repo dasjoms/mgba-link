@@ -80,6 +80,61 @@ static struct GBASIONetEvent _resultEvent(int playerId, const uint8_t* payload, 
 	return event;
 }
 
+
+M_TEST_DEFINE(transferStartCallbackSequenceIsStableAcrossReentrantStart) {
+	struct GBASIONetDriver net;
+	struct TestQueue outbound;
+	_initQueue(&outbound);
+	GBASIONetDriverCreate(&net);
+	GBASIONetDriverSetQueues(&net, &outbound.queue, NULL);
+	net.state = GBA_SIO_NET_IN_ROOM;
+	net.mode = GBA_SIO_NORMAL_8;
+	net.localPlayerId = 1;
+
+	assert_false(net.d.start(&net.d));
+	assert_true(net.transferArmed);
+	assert_int_equal(outbound.size, 1);
+	assert_int_equal(outbound.events[0].type, GBA_SIO_NET_EV_TRANSFER_START);
+	assert_int_equal(outbound.events[0].sequence, 1);
+
+	assert_false(net.d.start(&net.d));
+	assert_int_equal(outbound.size, 1);
+
+	assert_int_equal(net.d.finishNormal8(&net.d), 0xFF);
+	assert_false(net.transferArmed);
+
+	assert_false(net.d.start(&net.d));
+	assert_int_equal(outbound.size, 2);
+	assert_int_equal(outbound.events[1].type, GBA_SIO_NET_EV_TRANSFER_START);
+	assert_int_equal(outbound.events[1].sequence, 2);
+}
+
+M_TEST_DEFINE(controlFailureOrderingWinsOverQueuedTransferResult) {
+	struct GBASIONetDriver net;
+	struct TestQueue inbound;
+	_initQueue(&inbound);
+	GBASIONetDriverCreate(&net);
+	GBASIONetDriverSetQueues(&net, NULL, &inbound.queue);
+	net.state = GBA_SIO_NET_IN_ROOM;
+	net.localPlayerId = 1;
+	net.mode = GBA_SIO_NORMAL_8;
+
+	uint8_t payload[1] = { 0x5A };
+	struct GBASIONetEvent result = _resultEvent(1, payload, sizeof(payload));
+	struct GBASIONetEvent failure = {
+		.type = GBA_SIO_NET_EV_SESSION_FAILURE,
+		.sessionFailure = { .kind = GBA_SIO_NET_FAIL_DISCONNECTED, .code = 19 },
+	};
+	assert_true(inbound.queue.vtable->push(&inbound.queue, &result));
+	assert_true(inbound.queue.vtable->push(&inbound.queue, &failure));
+
+	assert_false(net.d.start(&net.d));
+	assert_true(net.sessionDisconnected);
+	assert_int_equal(net.state, GBA_SIO_NET_DISCONNECTED);
+	assert_int_equal(net.lastFailureCode, 19);
+	assert_int_equal(net.d.finishNormal8(&net.d), 0xFF);
+}
+
 M_TEST_DEFINE(setModeEnqueuesIntent) {
 	struct GBASIONetDriver net;
 	struct TestQueue outbound;
@@ -373,6 +428,8 @@ M_TEST_DEFINE(sessionDisconnectMidTransferForcesDeterministicFallbackAndBlocksSt
 }
 
 M_TEST_SUITE_DEFINE(GBANet,
+	cmocka_unit_test(transferStartCallbackSequenceIsStableAcrossReentrantStart),
+	cmocka_unit_test(controlFailureOrderingWinsOverQueuedTransferResult),
 	cmocka_unit_test(setModeEnqueuesIntent),
 	cmocka_unit_test(startStallsUntilInboundResultThenFinishConsumes),
 	cmocka_unit_test(finishMissingCommittedPayloadTriggersDeterministicSentinelAndError),
