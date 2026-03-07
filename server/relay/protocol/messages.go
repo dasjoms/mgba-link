@@ -118,13 +118,20 @@ func ParseAndValidateClientIntent(payload []byte) (*ClientIntent, *ProtocolViola
 		return nil
 	}
 
+	requireSupportedProtocolIfPresent := func() *ProtocolViolation {
+		if _, ok := root["protocolVersion"]; ok && decoded.ProtocolVersion != SupportedProtocolVersion {
+			return &ProtocolViolation{Code: 426, Message: fmt.Sprintf("unsupported protocolVersion: %d. Expected: %d", decoded.ProtocolVersion, SupportedProtocolVersion), Reason: "protocolError"}
+		}
+		return nil
+	}
+
 	switch intent {
 	case "hello":
 		if err := requireProtocol(); err != nil {
 			return nil, err
 		}
 	case "createRoom":
-		if err := requireProtocol(); err != nil {
+		if err := requireSupportedProtocolIfPresent(); err != nil {
 			return nil, err
 		}
 		if err := requireString("roomName", decoded.RoomName); err != nil {
@@ -134,29 +141,30 @@ func ParseAndValidateClientIntent(payload []byte) (*ClientIntent, *ProtocolViola
 			return nil, &ProtocolViolation{Code: 400, Message: "missing or invalid required field: maxPlayers", Reason: "protocolError"}
 		}
 	case "joinRoom":
-		if err := requireProtocol(); err != nil {
+		if err := requireSupportedProtocolIfPresent(); err != nil {
 			return nil, err
 		}
 		if err := requireString("roomId", decoded.RoomID); err != nil {
 			return nil, err
 		}
 	case "leaveRoom":
-		if _, ok := root["protocolVersion"]; ok {
-			if decoded.ProtocolVersion != SupportedProtocolVersion {
-				return nil, &ProtocolViolation{Code: 426, Message: fmt.Sprintf("unsupported protocolVersion: %d. Expected: %d", decoded.ProtocolVersion, SupportedProtocolVersion), Reason: "protocolError"}
-			}
+		if err := requireSupportedProtocolIfPresent(); err != nil {
+			return nil, err
 		}
 		if err := requireString("roomId", decoded.RoomID); err != nil {
 			return nil, err
 		}
 	case "heartbeat":
-		if _, ok := root["protocolVersion"]; ok && decoded.ProtocolVersion != SupportedProtocolVersion {
-			return nil, &ProtocolViolation{Code: 426, Message: fmt.Sprintf("unsupported protocolVersion: %d. Expected: %d", decoded.ProtocolVersion, SupportedProtocolVersion), Reason: "protocolError"}
+		if err := requireSupportedProtocolIfPresent(); err != nil {
+			return nil, err
 		}
 		if _, ok := root["heartbeatCounter"]; !ok {
 			return nil, &ProtocolViolation{Code: 400, Message: "missing required field: heartbeatCounter", Reason: "protocolError"}
 		}
 	case "publishLinkEvent":
+		if err := requireSupportedProtocolIfPresent(); err != nil {
+			return nil, err
+		}
 		var evt LinkEvent
 		if _, ok := root["event"]; !ok {
 			return nil, &ProtocolViolation{Code: 400, Message: "missing required field: event", Reason: "protocolError"}
