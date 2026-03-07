@@ -81,6 +81,7 @@ public:
 signals:
 	void gameAttached();
 	void gameDetached();
+	void remoteSessionStatusChanged();
 
 private:
 	union Node {
