@@ -51,6 +51,85 @@ static void GBASIONetDriverFinishMultiplayer(struct GBASIODriver* driver, uint16
 static uint8_t GBASIONetDriverFinishNormal8(struct GBASIODriver* driver);
 static uint32_t GBASIONetDriverFinishNormal32(struct GBASIODriver* driver);
 
+static size_t _expectedPayloadSize(enum GBASIOMode mode) {
+	switch (mode) {
+	case GBA_SIO_MULTI:
+		return sizeof(uint16_t) * MAX_GBAS;
+	case GBA_SIO_NORMAL_8:
+		return 1;
+	case GBA_SIO_NORMAL_32:
+		return sizeof(uint32_t);
+	default:
+		return 0;
+	}
+}
+
+static void _setProtocolError(struct GBASIONetDriver* net, const char* message) {
+	net->protocolError = true;
+	net->state = GBA_SIO_NET_DEGRADED;
+	mLOG(GBA_SIO, ERROR, "Net adapter protocol error: %s", message);
+}
+
+static bool _pushOutboundIntent(struct GBASIONetDriver* net, const struct GBASIONetEvent* event) {
+	if (!net->outboundQueue) {
+		return false;
+	}
+	return GBASIONetEventQueuePush(net->outboundQueue, event);
+}
+
+static bool _decodeTransferResult(struct GBASIONetDriver* net, const struct GBASIONetEvent* event) {
+	size_t expectedPayloadSize = _expectedPayloadSize(net->mode);
+	if (expectedPayloadSize == 0) {
+		_setProtocolError(net, "unsupported mode for transfer result");
+		return false;
+	}
+
+	if (!event->transferResult.payload || event->transferResult.payloadSize != expectedPayloadSize) {
+		_setProtocolError(net, "malformed transfer result payload size");
+		return false;
+	}
+
+	const uint8_t* payload = event->transferResult.payload;
+	switch (net->mode) {
+	case GBA_SIO_MULTI:
+		for (int i = 0; i < MAX_GBAS; ++i) {
+			net->multiplayerData[i] = payload[i * 2] | (payload[i * 2 + 1] << 8);
+		}
+		break;
+	case GBA_SIO_NORMAL_8:
+		net->normalData8 = payload[0];
+		break;
+	case GBA_SIO_NORMAL_32:
+		net->normalData32 = payload[0] | (payload[1] << 8) | (payload[2] << 16) | (payload[3] << 24);
+		break;
+	default:
+		_setProtocolError(net, "unsupported mode while decoding payload");
+		return false;
+	}
+
+	net->committedTransferReady = true;
+	net->committedTransferOrdinal = net->transferOrdinal;
+	return true;
+}
+
+static bool _pollInboundForCurrentTransfer(struct GBASIONetDriver* net) {
+	if (!net->inboundQueue) {
+		return false;
+	}
+
+	struct GBASIONetEvent event;
+	while (GBASIONetEventQueueTryPop(net->inboundQueue, &event)) {
+		if (event.type != GBA_SIO_NET_EV_TRANSFER_RESULT) {
+			continue;
+		}
+		if (event.transferResult.playerId != net->localPlayerId) {
+			continue;
+		}
+		return _decodeTransferResult(net, &event);
+	}
+	return false;
+}
+
 void GBASIONetDriverCreate(struct GBASIONetDriver* driver) {
 	memset(driver, 0, sizeof(*driver));
 	driver->d.init = GBASIONetDriverInit;
@@ -73,6 +152,12 @@ void GBASIONetDriverCreate(struct GBASIONetDriver* driver) {
 	driver->state = GBA_SIO_NET_DISCONNECTED;
 	driver->mode = (enum GBASIOMode) -1;
 	driver->roomPlayerCount = 1;
+	driver->nextOutboundSequence = 1;
+}
+
+void GBASIONetDriverSetQueues(struct GBASIONetDriver* driver, struct GBASIONetEventQueue* outboundQueue, struct GBASIONetEventQueue* inboundQueue) {
+	driver->outboundQueue = outboundQueue;
+	driver->inboundQueue = inboundQueue;
 }
 
 static bool GBASIONetDriverInit(struct GBASIODriver* driver) {
@@ -84,6 +169,7 @@ static void GBASIONetDriverDeinit(struct GBASIODriver* driver) {
 	struct GBASIONetDriver* net = (struct GBASIONetDriver*) driver;
 	net->state = GBA_SIO_NET_DISCONNECTED;
 	net->transferArmed = false;
+	net->committedTransferReady = false;
 }
 
 static void GBASIONetDriverReset(struct GBASIODriver* driver) {
@@ -97,8 +183,12 @@ static void GBASIONetDriverReset(struct GBASIODriver* driver) {
 	memset(net->multiplayerData, 0xFF, sizeof(net->multiplayerData));
 	net->normalData8 = 0xFF;
 	net->normalData32 = 0xFFFFFFFF;
+	net->committedTransferReady = false;
+	net->committedTransferOrdinal = 0;
 	net->transferArmed = false;
+	net->protocolError = false;
 	net->transferOrdinal = 0;
+	net->nextOutboundSequence = 1;
 }
 
 static uint32_t GBASIONetDriverId(const struct GBASIODriver* driver) {
@@ -153,6 +243,9 @@ static bool GBASIONetDriverLoadState(struct GBASIODriver* driver, const void* da
 	net->normalData8 = state->normalData8;
 	LOAD_32LE(net->normalData32, 0, &state->normalData32);
 	LOAD_32LE(net->transferOrdinal, 0, &state->transferOrdinal);
+	net->committedTransferOrdinal = net->transferOrdinal;
+	net->committedTransferReady = false;
+	net->protocolError = false;
 	return true;
 }
 
@@ -186,6 +279,19 @@ static void GBASIONetDriverSetMode(struct GBASIODriver* driver, enum GBASIOMode 
 	net->mode = mode;
 	if (net->state == GBA_SIO_NET_ACTIVE_TRANSFER) {
 		net->state = GBA_SIO_NET_IN_ROOM;
+	}
+
+	struct GBASIONetEvent event = {
+		.type = GBA_SIO_NET_EV_MODE_SET,
+		.senderPlayerId = net->localPlayerId,
+		.sequence = net->nextOutboundSequence++,
+		.modeSet = {
+			.playerId = net->localPlayerId,
+			.mode = mode,
+		},
+	};
+	if (!_pushOutboundIntent(net, &event)) {
+		mLOG(GBA_SIO, DEBUG, "Net adapter dropped mode-set intent (queue unavailable/full)");
 	}
 }
 
@@ -253,8 +359,39 @@ static uint16_t GBASIONetDriverWriteRCNT(struct GBASIODriver* driver, uint16_t v
 
 static bool GBASIONetDriverStart(struct GBASIODriver* driver) {
 	struct GBASIONetDriver* net = (struct GBASIONetDriver*) driver;
-	++net->transferOrdinal;
-	net->transferArmed = true;
+	if (!net->transferArmed) {
+		++net->transferOrdinal;
+		net->transferArmed = true;
+		net->committedTransferReady = false;
+
+		struct GBASIONetEvent event = {
+			.type = GBA_SIO_NET_EV_TRANSFER_START,
+			.senderPlayerId = net->localPlayerId,
+			.sequence = net->nextOutboundSequence++,
+			.transferStart = {
+				.playerId = net->localPlayerId,
+				.mode = net->mode,
+				.finishCycle = -1,
+			},
+		};
+		if (!_pushOutboundIntent(net, &event)) {
+			mLOG(GBA_SIO, DEBUG, "Net adapter dropped transfer-start intent (queue unavailable/full)");
+		}
+	}
+
+	if (net->committedTransferReady && net->committedTransferOrdinal == net->transferOrdinal) {
+		if (net->state >= GBA_SIO_NET_IN_ROOM) {
+			net->state = GBA_SIO_NET_ACTIVE_TRANSFER;
+		}
+		return true;
+	}
+
+	if (!_pollInboundForCurrentTransfer(net)) {
+		if (net->state >= GBA_SIO_NET_IN_ROOM) {
+			net->state = GBA_SIO_NET_ACTIVE_TRANSFER;
+		}
+		return false;
+	}
 
 	if (net->state >= GBA_SIO_NET_IN_ROOM) {
 		net->state = GBA_SIO_NET_ACTIVE_TRANSFER;
@@ -264,10 +401,14 @@ static bool GBASIONetDriverStart(struct GBASIODriver* driver) {
 
 static void GBASIONetDriverFinishMultiplayer(struct GBASIODriver* driver, uint16_t data[4]) {
 	struct GBASIONetDriver* net = (struct GBASIONetDriver*) driver;
+	if (!net->committedTransferReady || net->committedTransferOrdinal != net->transferOrdinal) {
+		_setProtocolError(net, "missing committed multiplayer completion payload");
+	}
 	for (int i = 0; i < MAX_GBAS; ++i) {
 		data[i] = net->multiplayerData[i];
 	}
 	net->transferArmed = false;
+	net->committedTransferReady = false;
 	if (net->state == GBA_SIO_NET_ACTIVE_TRANSFER) {
 		net->state = GBA_SIO_NET_IN_ROOM;
 	}
@@ -275,7 +416,11 @@ static void GBASIONetDriverFinishMultiplayer(struct GBASIODriver* driver, uint16
 
 static uint8_t GBASIONetDriverFinishNormal8(struct GBASIODriver* driver) {
 	struct GBASIONetDriver* net = (struct GBASIONetDriver*) driver;
+	if (!net->committedTransferReady || net->committedTransferOrdinal != net->transferOrdinal) {
+		_setProtocolError(net, "missing committed normal8 completion payload");
+	}
 	net->transferArmed = false;
+	net->committedTransferReady = false;
 	if (net->state == GBA_SIO_NET_ACTIVE_TRANSFER) {
 		net->state = GBA_SIO_NET_IN_ROOM;
 	}
@@ -284,7 +429,11 @@ static uint8_t GBASIONetDriverFinishNormal8(struct GBASIODriver* driver) {
 
 static uint32_t GBASIONetDriverFinishNormal32(struct GBASIODriver* driver) {
 	struct GBASIONetDriver* net = (struct GBASIONetDriver*) driver;
+	if (!net->committedTransferReady || net->committedTransferOrdinal != net->transferOrdinal) {
+		_setProtocolError(net, "missing committed normal32 completion payload");
+	}
 	net->transferArmed = false;
+	net->committedTransferReady = false;
 	if (net->state == GBA_SIO_NET_ACTIVE_TRANSFER) {
 		net->state = GBA_SIO_NET_IN_ROOM;
 	}

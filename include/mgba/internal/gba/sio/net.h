@@ -11,6 +11,7 @@
 CXX_GUARD_START
 
 #include <mgba/internal/gba/sio.h>
+#include <mgba/internal/gba/sio/net-bridge.h>
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -25,6 +26,8 @@ enum GBASIONetDriverState {
 
 struct GBASIONetDriver {
 	struct GBASIODriver d;
+	struct GBASIONetEventQueue* outboundQueue;
+	struct GBASIONetEventQueue* inboundQueue;
 	enum GBASIONetDriverState state;
 	enum GBASIOMode mode;
 	int roomPlayerCount;
@@ -34,11 +37,16 @@ struct GBASIONetDriver {
 	uint16_t multiplayerData[4];
 	uint8_t normalData8;
 	uint32_t normalData32;
+	uint32_t committedTransferOrdinal;
+	bool committedTransferReady;
 	bool transferArmed;
+	bool protocolError;
+	int64_t nextOutboundSequence;
 	uint32_t transferOrdinal;
 };
 
 void GBASIONetDriverCreate(struct GBASIONetDriver* driver);
+void GBASIONetDriverSetQueues(struct GBASIONetDriver* driver, struct GBASIONetEventQueue* outboundQueue, struct GBASIONetEventQueue* inboundQueue);
 
 CXX_GUARD_END
 
