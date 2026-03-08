@@ -48,6 +48,7 @@ $requiredPackages = @(
     "$mingwPrefix-libepoxy",
     "$mingwPrefix-libzip",
     "$mingwPrefix-lua",
+    "$mingwPrefix-ninja",
     "$mingwPrefix-pkgconf",
     "$mingwPrefix-qt5",
     "$mingwPrefix-SDL2",
@@ -89,8 +90,8 @@ set -euo pipefail
 export PATH="/mingw64/bin:$PATH"
 mkdir -p "__REPO_ROOT__/out/mgba/build"
 cd "__REPO_ROOT__/out/mgba/build"
-cmake "__REPO_ROOT__" -G "MSYS Makefiles"
-make -j"$(nproc)"
+cmake "__REPO_ROOT__" -G "Ninja"
+cmake --build . --parallel "$(nproc)"
 '@
 
 $buildScript = $buildScriptTemplate.Replace('__REPO_ROOT__', $repoRootPosix)
