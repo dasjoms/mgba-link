@@ -90,7 +90,12 @@ set -euo pipefail
 export PATH="/mingw64/bin:$PATH"
 mkdir -p "__REPO_ROOT__/out/mgba/build"
 cd "__REPO_ROOT__/out/mgba/build"
-cmake "__REPO_ROOT__" -G "Ninja"
+# Ensure generator/config settings don't get stuck from previous failed runs.
+rm -f CMakeCache.txt
+rm -rf CMakeFiles
+
+# Build with full feature set, including Lua scripting support.
+cmake "__REPO_ROOT__" -G "Ninja" -DUSE_LUA=5.4
 cmake --build . --parallel "$(nproc)"
 '@
 
