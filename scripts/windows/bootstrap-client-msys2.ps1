@@ -95,7 +95,9 @@ rm -f CMakeCache.txt
 rm -rf CMakeFiles
 
 # Build with full feature set, including Lua scripting support.
-cmake "__REPO_ROOT__" -G "Ninja" -DUSE_LUA=5.4
+# Disable LTO for MSYS2 bootstrap builds to avoid known GCC 15 ICE failures
+# (internal compiler errors) seen in Qt sources with -flto.
+cmake "__REPO_ROOT__" -G "Ninja" -DUSE_LUA=5.4 -DBUILD_LTO=OFF
 cmake --build . --parallel "$(nproc)"
 '@
 
