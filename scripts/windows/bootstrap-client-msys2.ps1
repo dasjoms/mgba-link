@@ -41,6 +41,7 @@ $mingwPrefix = 'mingw-w64-x86_64'
 $requiredPackages = @(
     'base-devel',
     'git',
+    "$mingwPrefix-angleproject",
     "$mingwPrefix-cmake",
     "$mingwPrefix-ffmpeg",
     "$mingwPrefix-gcc",
@@ -170,37 +171,77 @@ Invoke-Step -Description "Prepare runtime bundle in '$runtimeDir'" -Action {
         'fi'
         ''
         'ntldd -R "./$exe" > ./ntldd-mgba-qt.txt'
+        'cp -f ./ntldd-mgba-qt.txt ./ntldd-runtime-scan.txt'
         'unresolved_count=0'
         'noncritical_api_set_count=0'
+        'noncritical_missing_dlls=()'
+        'critical_missing_dlls=()'
         'while IFS= read -r unresolved; do'
         '  [[ -z "$unresolved" ]] && continue'
-        '  dep_name="${unresolved%% *}"'
-        '  if [[ "$dep_name" == ext-ms-win-* ]]; then'
-        '    echo "note: non-critical API-set unresolved entry: $dep_name" >&2'
+        '  dep_name="$(awk "{print \$1}" <<< "$unresolved" | tr -d "\r")"'
+        '  [[ -z "$dep_name" ]] && continue'
+        '  dep_lower="${dep_name,,}"'
+        '  if [[ "$dep_lower" == ext-ms-* || "$dep_lower" == api-ms-* || "$dep_lower" == api-ms-win-* ]]; then'
+        '    noncritical_missing_dlls+=("$dep_name")'
         '    noncritical_api_set_count=$((noncritical_api_set_count + 1))'
         '    continue'
         '  fi'
+        '  # Some Windows components appear as delay-load entries in ntldd but are optional on many machines.'
+        '  if [[ "$dep_lower" == "pdmutilities.dll" || "$dep_lower" == "hvsifiletrust.dll" ]]; then'
+        '    noncritical_missing_dlls+=("$dep_name")'
+        '    continue'
+        '  fi'
         '  echo "error: critical missing runtime DLL from ntldd: $dep_name" >&2'
+        '  critical_missing_dlls+=("$dep_name")'
         '  unresolved_count=$((unresolved_count + 1))'
         'done < <(grep "not found" ./ntldd-mgba-qt.txt || true)'
+        'printf "%s\n" "${noncritical_missing_dlls[@]:-}" | sed "/^$/d" | sort -u > ./ntldd-noncritical-missing.txt || true'
+        'printf "%s\n" "${critical_missing_dlls[@]:-}" | sed "/^$/d" | sort -u > ./ntldd-critical-missing.txt || true'
         ''
         'if (( unresolved_count > 0 )); then'
-        '  echo "critical missing runtime DLLs detected ($unresolved_count). Review ./ntldd-mgba-qt.txt." >&2'
+        '  echo "critical missing runtime DLLs detected ($unresolved_count). Review ./ntldd-critical-missing.txt and ./ntldd-mgba-qt.txt." >&2'
         '  exit 1'
         'fi'
         ''
         'if (( noncritical_api_set_count > 0 )); then'
-        '  echo "non-critical API-set unresolved entries detected ($noncritical_api_set_count); continuing." >&2'
+        '  echo "non-critical unresolved API-set entries detected ($noncritical_api_set_count); see ./ntldd-noncritical-missing.txt." >&2'
         'fi'
         ''
         "awk '"
         '  /=> \/mingw64\// { print $3 }'
         '  /^\/mingw64\// { print $1 }'
-        "' ./ntldd-mgba-qt.txt | sort -u | while read -r dep; do"
+        "' ./ntldd-runtime-scan.txt | sort -u | while read -r dep; do"
         '  if [[ -f "$dep" ]]; then'
         '    cp -f "$dep" .'
         '  fi'
         'done'
+        ''
+        'echo "Scanning bundled runtime DLLs for unresolved dependencies..." >&2'
+        'while IFS= read -r runtimeDll; do'
+        '  [[ -z "$runtimeDll" ]] && continue'
+        '  echo >> ./ntldd-runtime-scan.txt'
+        '  echo "### SCAN: $runtimeDll" >> ./ntldd-runtime-scan.txt'
+        '  ntldd -R "$runtimeDll" >> ./ntldd-runtime-scan.txt || true'
+        'done < <(find . -type f -name "*.dll" | sort)'
+        ''
+        'scan_unresolved_count=0'
+        'scan_critical_missing_dlls=()'
+        'while IFS= read -r unresolved; do'
+        '  [[ -z "$unresolved" ]] && continue'
+        '  dep_name="$(awk "{print \\$1}" <<< "$unresolved" | tr -d "\r")"'
+        '  [[ -z "$dep_name" ]] && continue'
+        '  dep_lower="${dep_name,,}"'
+        '  if [[ "$dep_lower" == ext-ms-* || "$dep_lower" == api-ms-* || "$dep_lower" == api-ms-win-* || "$dep_lower" == "pdmutilities.dll" || "$dep_lower" == "hvsifiletrust.dll" ]]; then'
+        '    continue'
+        '  fi'
+        '  scan_critical_missing_dlls+=("$dep_name")'
+        '  scan_unresolved_count=$((scan_unresolved_count + 1))'
+        'done < <(grep "not found" ./ntldd-runtime-scan.txt || true)'
+        'printf "%s\n" "${scan_critical_missing_dlls[@]:-}" | sed "/^$/d" | sort -u > ./ntldd-runtime-critical-missing.txt || true'
+        'if (( scan_unresolved_count > 0 )); then'
+        '  echo "error: runtime scan found additional critical unresolved DLLs ($scan_unresolved_count). Review ./ntldd-runtime-critical-missing.txt and ./ntldd-runtime-scan.txt." >&2'
+        '  exit 1'
+        'fi'
     )
     $bundleScript = ($bundleScriptLines -join "`n")
 
@@ -231,24 +272,37 @@ Invoke-Step -Description 'Run mgba-qt runtime smoke test with plugin diagnostics
     }
 
     $logFile = Join-Path $runtimeDir 'startup-log.txt'
-    New-Item -Path $logFile -ItemType File -Force | Out-Null
+    $null = New-Item -Path $logFile -ItemType File -Force
 
     $env:QT_DEBUG_PLUGINS = '1'
     try {
+        Add-Content -Path $logFile -Value ("[{0}] Smoke test starting" -f (Get-Date -Format o))
+        Add-Content -Path $logFile -Value ("Runtime binary: {0}" -f $runtimeBinary)
+        Add-Content -Path $logFile -Value ("Command: {0} --version" -f $runtimeBinary)
+
+        $exitCode = $null
         try {
-            $proc = Start-Process -FilePath $runtimeBinary -ArgumentList '--version' -RedirectStandardOutput $logFile -RedirectStandardError $logFile -PassThru -Wait
+            & $runtimeBinary '--version' *>> $logFile
+            $exitCode = $LASTEXITCODE
         }
         catch {
             $_ | Out-String | Add-Content -Path $logFile
             Fail-Step "mgba-qt smoke test could not launch '$runtimeBinary'."
         }
 
-        if ($proc.ExitCode -ne 0) {
+        if ($null -eq $exitCode) {
+            $exitCode = 1
+        }
+
+        Add-Content -Path $logFile -Value ("Exit code: {0}" -f $exitCode)
+        Add-Content -Path $logFile -Value ("[{0}] Smoke test finished" -f (Get-Date -Format o))
+
+        if ($exitCode -ne 0) {
             $inspectHint = ''
             if (Test-Path -Path $logFile -PathType Leaf) {
                 $inspectHint = " Inspect '$logFile'."
             }
-            Fail-Step "mgba-qt smoke test failed with exit code $($proc.ExitCode).$inspectHint Inspect '$runtimeDir/ntldd-mgba-qt.txt'."
+            Fail-Step "mgba-qt smoke test failed with exit code $exitCode.$inspectHint Inspect '$runtimeDir/ntldd-mgba-qt.txt' and '$runtimeDir/ntldd-runtime-critical-missing.txt'."
         }
     }
     finally {
@@ -267,5 +321,7 @@ Invoke-Step -Description 'Run mgba-qt runtime smoke test with plugin diagnostics
 Write-Host "Client bootstrap complete. Qt binary: $qtBinary" -ForegroundColor Green
 Write-Host "Resolved runtime executable: $(Join-Path $runtimeDir $resolvedQtBinaryName)" -ForegroundColor Green
 Write-Host "Runtime bundle: $runtimeDir" -ForegroundColor Green
-Write-Host "Dependency report: $(Join-Path $runtimeDir 'ntldd-mgba-qt.txt')" -ForegroundColor Green
+Write-Host "Dependency report (exe): $(Join-Path $runtimeDir 'ntldd-mgba-qt.txt')" -ForegroundColor Green
+Write-Host "Dependency report (runtime scan): $(Join-Path $runtimeDir 'ntldd-runtime-scan.txt')" -ForegroundColor Green
+Write-Host "Critical missing DLL report: $(Join-Path $runtimeDir 'ntldd-runtime-critical-missing.txt')" -ForegroundColor Green
 Write-Host "Startup diagnostics: $(Join-Path $runtimeDir 'startup-log.txt')" -ForegroundColor Green

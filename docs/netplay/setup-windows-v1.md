@@ -174,6 +174,9 @@ EXE=$(find /c/mgba -iname 'mgba-qt.exe' | head -n 1)
 - `Invoke-RestMethod` GitHub API rate limit hit: retry later or use an authenticated GitHub token in headers.
 - No `win64 .zip` asset found: release may be repackaged; download manually from the release page and extract to `C:\mgba`.
 - `mgba-qt.exe` missing after extract: verify archive extraction path; re-run `Expand-Archive -Force`.
+- `libGLESv2.dll does not exist` during MSYS2 runtime bundling: install ANGLE runtime (`pacman -S --needed mingw-w64-x86_64-angleproject`) and confirm `C:\msys64\mingw64\bin\libGLESv2.dll` and `libEGL.dll` exist before re-running `scripts/windows/bootstrap-client-msys2.ps1`.
+- Hundreds of `... => not found` lines for `ext-ms-*`/`api-ms-*` from `ntldd`: these are Windows API-set forwarder names (not redistributable DLLs). They should be treated as non-critical; focus on real missing runtime DLL names in `out/mgba/runtime/ntldd-critical-missing.txt`.
+- If the smoke test exits `0` but app launch still fails from Explorer, inspect `out/mgba/runtime/ntldd-runtime-critical-missing.txt` (real blockers across runtime DLLs/plugins) and `out/mgba/runtime/startup-log.txt` (timestamped smoke invocation + exit code).
 - Black/blank render window: update graphics drivers and ensure OpenGL support is available.
 
 ## Server Host & Client Installation
