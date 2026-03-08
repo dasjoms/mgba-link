@@ -248,20 +248,26 @@ Invoke-Step -Description 'Run mgba-qt runtime smoke test with plugin diagnostics
 
     $env:QT_DEBUG_PLUGINS = '1'
     try {
+        $exitCode = $null
         try {
-            $proc = Start-Process -FilePath $runtimeBinary -ArgumentList '--version' -RedirectStandardOutput $logFile -RedirectStandardError $logFile -PassThru -Wait
+            & $runtimeBinary '--version' *> $logFile
+            $exitCode = $LASTEXITCODE
         }
         catch {
             $_ | Out-String | Add-Content -Path $logFile
             Fail-Step "mgba-qt smoke test could not launch '$runtimeBinary'."
         }
 
-        if ($proc.ExitCode -ne 0) {
+        if ($null -eq $exitCode) {
+            $exitCode = 1
+        }
+
+        if ($exitCode -ne 0) {
             $inspectHint = ''
             if (Test-Path -Path $logFile -PathType Leaf) {
                 $inspectHint = " Inspect '$logFile'."
             }
-            Fail-Step "mgba-qt smoke test failed with exit code $($proc.ExitCode).$inspectHint Inspect '$runtimeDir/ntldd-mgba-qt.txt'."
+            Fail-Step "mgba-qt smoke test failed with exit code $exitCode.$inspectHint Inspect '$runtimeDir/ntldd-mgba-qt.txt'."
         }
     }
     finally {
