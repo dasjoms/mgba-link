@@ -140,39 +140,46 @@ Invoke-Step -Description "Prepare runtime bundle in '$runtimeDir'" -Action {
     }
 
     $bundleScriptPath = [System.IO.Path]::ChangeExtension([System.IO.Path]::GetTempFileName(), '.sh')
-    $bundleScript = @'
-set -euo pipefail
-export PATH="/mingw64/bin:$PATH"
-cd "$1"
-exe="$2"
-
-deploy_tool=""
-if command -v windeployqt-qt5 >/dev/null 2>&1; then
-  deploy_tool="windeployqt-qt5"
-elif command -v windeployqt >/dev/null 2>&1; then
-  deploy_tool="windeployqt"
-fi
-
-if [[ -n "$deploy_tool" ]]; then
-  "$deploy_tool" --release --no-translations --no-compiler-runtime "./$exe"
-else
-  echo "warning: windeployqt not found; falling back to ntldd for direct DLL dependencies" >&2
-fi
-
-ntldd -R "./$exe" > ./ntldd-mgba-qt.txt
-
-awk '
-  /=> \/mingw64\// { print $3 }
-  /^\/mingw64\// { print $1 }
-' ./ntldd-mgba-qt.txt | sort -u | while read -r dep; do
-  if [[ -f "$dep" ]]; then
-    cp -f "$dep" .
-  fi
-done
-'@
+    $bundleScriptLines = @(
+        'set -euo pipefail'
+        'export PATH="/mingw64/bin:$PATH"'
+        'cd "$1"'
+        'exe="$2"'
+        ''
+        'deploy_tool=""'
+        'if command -v windeployqt-qt5 >/dev/null 2>&1; then'
+        '  deploy_tool="windeployqt-qt5"'
+        'elif command -v windeployqt >/dev/null 2>&1; then'
+        '  deploy_tool="windeployqt"'
+        'fi'
+        ''
+        'if [[ -n "$deploy_tool" ]]; then'
+        '  "$deploy_tool" --release --no-translations --no-compiler-runtime "./$exe"'
+        'else'
+        '  echo "warning: windeployqt not found; falling back to ntldd for direct DLL dependencies" >&2'
+        'fi'
+        ''
+        'ntldd -R "./$exe" > ./ntldd-mgba-qt.txt'
+        ''
+        "awk '"
+        '  /=> \/mingw64\// { print $3 }'
+        '  /^\/mingw64\// { print $1 }'
+        "' ./ntldd-mgba-qt.txt | sort -u | while read -r dep; do"
+        '  if [[ -f "$dep" ]]; then'
+        '    cp -f "$dep" .'
+        '  fi'
+        'done'
+    )
+    $bundleScript = ($bundleScriptLines -join "`n")
 
     try {
-        Set-Content -Path $bundleScriptPath -Value $bundleScript -Encoding UTF8 -NoNewline
+        [System.IO.File]::WriteAllText($bundleScriptPath, $bundleScript, (New-Object System.Text.UTF8Encoding($false)))
+
+        $prefixBytes = [System.IO.File]::ReadAllBytes($bundleScriptPath) | Select-Object -First 3
+        if ($prefixBytes.Count -ge 3 -and $prefixBytes[0] -eq 0xEF -and $prefixBytes[1] -eq 0xBB -and $prefixBytes[2] -eq 0xBF) {
+            Fail-Step "Temporary bundle script '$bundleScriptPath' was written with a UTF-8 BOM (EF BB BF), but MSYS2 bash requires UTF-8 without BOM."
+        }
+
         $bundleScriptPathPosix = (& $msysShell -lc 'cygpath -u "$1"' -- $bundleScriptPath).Trim()
         if (-not $bundleScriptPathPosix) {
             Fail-Step 'Unable to convert temporary bundle script path to MSYS2 format (cygpath failed).'
