@@ -964,7 +964,7 @@ bool MultiplayerController::attachGame(CoreController* controller) {
 			}
 			node->state = GBA_SIO_NET_IN_ROOM;
 			node->localPlayerId = (m_remotePlayerId >= 0 && m_remotePlayerId < MAX_GBAS) ? m_remotePlayerId : 0;
-			node->roomPlayerCount = std::clamp(m_remotePlayerCount, 1, MAX_GBAS);
+			node->roomPlayerCount = QGBA::clamp(m_remotePlayerCount, 1, MAX_GBAS);
 			node->attachedPlayerMask = (1U << node->localPlayerId);
 			if (m_remoteSession) {
 				const auto room = m_remoteSession->room();
