@@ -41,6 +41,7 @@ $mingwPrefix = 'mingw-w64-x86_64'
 $requiredPackages = @(
     'base-devel',
     'git',
+    "$mingwPrefix-angleproject",
     "$mingwPrefix-cmake",
     "$mingwPrefix-ffmpeg",
     "$mingwPrefix-gcc",
