@@ -18,8 +18,13 @@ function Invoke-Step {
     )
 
     if ($PSCmdlet.ShouldProcess($Description, 'Run')) {
+        $global:LASTEXITCODE = 0
         & $Action
-        if ($LASTEXITCODE -ne 0) {
+        $nativeExitCode = $global:LASTEXITCODE
+        if (-not $?) {
+            Fail-Step "Failed: $Description"
+        }
+        if ($null -ne $nativeExitCode -and $nativeExitCode -ne 0) {
             Fail-Step "Failed: $Description"
         }
     }
