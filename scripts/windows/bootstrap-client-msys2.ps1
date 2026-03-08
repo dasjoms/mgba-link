@@ -108,9 +108,21 @@ Invoke-Step -Description "Configure and build mGBA Qt in '$buildDir'" -Action {
     & $msysShell -lc $buildScript
 }
 
-$qtBinary = Join-Path $buildDir 'mgba-qt.exe'
-if (-not (Test-Path -Path $qtBinary -PathType Leaf)) {
-    Write-Host "Build completed but '$qtBinary' was not found." -ForegroundColor Yellow
+$qtBinaryCandidates = @('mGBA.exe', 'mgba-qt.exe')
+$resolvedQtBinaryName = $null
+$qtBinary = $null
+foreach ($candidate in $qtBinaryCandidates) {
+    $candidatePath = Join-Path $buildDir $candidate
+    if (Test-Path -Path $candidatePath -PathType Leaf) {
+        $resolvedQtBinaryName = $candidate
+        $qtBinary = $candidatePath
+        break
+    }
+}
+
+if (-not $qtBinary) {
+    Write-Host "Build completed but no Qt executable was found in '$buildDir'." -ForegroundColor Yellow
+    Write-Host "Checked for: $($qtBinaryCandidates -join ', ')" -ForegroundColor Yellow
     Write-Host 'Check CMake output for disabled Qt frontend or build errors.' -ForegroundColor Yellow
     Fail-Step 'mGBA Qt build artifact missing'
 }
@@ -119,7 +131,8 @@ Invoke-Step -Description "Prepare runtime bundle in '$runtimeDir'" -Action {
     Remove-Item -Path $runtimeDir -Recurse -Force -ErrorAction SilentlyContinue
     New-Item -Path $runtimeDir -ItemType Directory -Force | Out-Null
 
-    Copy-Item -Path $qtBinary -Destination (Join-Path $runtimeDir 'mgba-qt.exe') -Force
+    $runtimeQtBinary = Join-Path $runtimeDir $resolvedQtBinaryName
+    Copy-Item -Path $qtBinary -Destination $runtimeQtBinary -Force
 
     $runtimeDirPosix = (& $msysShell -lc "cygpath -u '$runtimeDir'").Trim()
     if (-not $runtimeDirPosix) {
@@ -139,12 +152,12 @@ elif command -v windeployqt >/dev/null 2>&1; then
 fi
 
 if [[ -n "$deploy_tool" ]]; then
-  "$deploy_tool" --release --no-translations --no-compiler-runtime ./mgba-qt.exe
+  "$deploy_tool" --release --no-translations --no-compiler-runtime ./__QT_BINARY_NAME__
 else
   echo "warning: windeployqt not found; falling back to ntldd for direct DLL dependencies" >&2
 fi
 
-ntldd -R ./mgba-qt.exe > ./ntldd-mgba-qt.txt
+ntldd -R ./__QT_BINARY_NAME__ > ./ntldd-mgba-qt.txt
 
 awk '
   /=> \/mingw64\// { print $3 }
@@ -156,12 +169,12 @@ awk '
 done
 '@
 
-    $bundleScript = $bundleScriptTemplate.Replace('__RUNTIME_DIR__', $runtimeDirPosix)
+    $bundleScript = $bundleScriptTemplate.Replace('__RUNTIME_DIR__', $runtimeDirPosix).Replace('__QT_BINARY_NAME__', $resolvedQtBinaryName)
     & $msysShell -lc $bundleScript
 }
 
 Invoke-Step -Description 'Run mgba-qt runtime smoke test with plugin diagnostics' -Action {
-    $runtimeBinary = Join-Path $runtimeDir 'mgba-qt.exe'
+    $runtimeBinary = Join-Path $runtimeDir $resolvedQtBinaryName
     if (-not (Test-Path -Path $runtimeBinary -PathType Leaf)) {
         Fail-Step "Runtime smoke test could not find '$runtimeBinary'."
     }
@@ -181,6 +194,7 @@ Invoke-Step -Description 'Run mgba-qt runtime smoke test with plugin diagnostics
 }
 
 Write-Host "Client bootstrap complete. Qt binary: $qtBinary" -ForegroundColor Green
+Write-Host "Resolved runtime executable: $(Join-Path $runtimeDir $resolvedQtBinaryName)" -ForegroundColor Green
 Write-Host "Runtime bundle: $runtimeDir" -ForegroundColor Green
 Write-Host "Dependency report: $(Join-Path $runtimeDir 'ntldd-mgba-qt.txt')" -ForegroundColor Green
 Write-Host "Startup diagnostics: $(Join-Path $runtimeDir 'startup-log.txt')" -ForegroundColor Green
