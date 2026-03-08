@@ -18,8 +18,13 @@ function Invoke-Step {
     )
 
     if ($PSCmdlet.ShouldProcess($Description, 'Run')) {
+        $global:LASTEXITCODE = 0
         & $Action
-        if ($LASTEXITCODE -ne 0) {
+        $nativeExitCode = $global:LASTEXITCODE
+        if (-not $?) {
+            Fail-Step "Failed: $Description"
+        }
+        if ($null -ne $nativeExitCode -and $nativeExitCode -ne 0) {
             Fail-Step "Failed: $Description"
         }
     }
@@ -79,14 +84,16 @@ if (-not $repoRootPosix) {
     Fail-Step 'Unable to convert repository path to MSYS2 format (cygpath failed).'
 }
 
-$buildScript = @"
+$buildScriptTemplate = @'
 set -euo pipefail
 export PATH="/mingw64/bin:$PATH"
-mkdir -p "$repoRootPosix/out/mgba/build"
-cd "$repoRootPosix/out/mgba/build"
-cmake "$repoRootPosix" -G "MSYS Makefiles"
-make -j
-"@
+mkdir -p "__REPO_ROOT__/out/mgba/build"
+cd "__REPO_ROOT__/out/mgba/build"
+cmake "__REPO_ROOT__" -G "MSYS Makefiles"
+make -j"$(nproc)"
+'@
+
+$buildScript = $buildScriptTemplate.Replace('__REPO_ROOT__', $repoRootPosix)
 
 Invoke-Step -Description "Configure and build mGBA Qt in '$buildDir'" -Action {
     & $msysShell -lc $buildScript
