@@ -24,7 +24,11 @@ $commonArgs = @{
 
 if ($PSCmdlet.ShouldProcess('bootstrap-relay.ps1', 'Run relay bootstrap')) {
     & $relayScript @commonArgs
-    if ($LASTEXITCODE -ne 0) {
+    if (-not $?) {
+        Write-Error 'Relay bootstrap failed. See output above for next steps.'
+        exit 1
+    }
+    if ($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) {
         Write-Error 'Relay bootstrap failed. See output above for next steps.'
         exit 1
     }
@@ -32,7 +36,11 @@ if ($PSCmdlet.ShouldProcess('bootstrap-relay.ps1', 'Run relay bootstrap')) {
 
 if ($PSCmdlet.ShouldProcess('bootstrap-client-msys2.ps1', 'Run client bootstrap')) {
     & $clientScript @commonArgs
-    if ($LASTEXITCODE -ne 0) {
+    if (-not $?) {
+        Write-Error 'Client bootstrap failed. See output above for next steps.'
+        exit 1
+    }
+    if ($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) {
         Write-Error 'Client bootstrap failed. See output above for next steps.'
         exit 1
     }
