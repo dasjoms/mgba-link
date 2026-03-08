@@ -134,15 +134,17 @@ Invoke-Step -Description "Prepare runtime bundle in '$runtimeDir'" -Action {
     $runtimeQtBinary = Join-Path $runtimeDir $resolvedQtBinaryName
     Copy-Item -Path $qtBinary -Destination $runtimeQtBinary -Force
 
-    $runtimeDirPosix = (& $msysShell -lc "cygpath -u '$runtimeDir'").Trim()
+    $runtimeDirPosix = (& $msysShell -lc 'cygpath -u "$1"' -- $runtimeDir).Trim()
     if (-not $runtimeDirPosix) {
         Fail-Step 'Unable to convert runtime directory path to MSYS2 format (cygpath failed).'
     }
 
-    $bundleScriptTemplate = @'
+    $bundleScriptPath = [System.IO.Path]::ChangeExtension([System.IO.Path]::GetTempFileName(), '.sh')
+    $bundleScript = @'
 set -euo pipefail
 export PATH="/mingw64/bin:$PATH"
-cd "__RUNTIME_DIR__"
+cd "$1"
+exe="$2"
 
 deploy_tool=""
 if command -v windeployqt-qt5 >/dev/null 2>&1; then
@@ -152,12 +154,12 @@ elif command -v windeployqt >/dev/null 2>&1; then
 fi
 
 if [[ -n "$deploy_tool" ]]; then
-  "$deploy_tool" --release --no-translations --no-compiler-runtime ./__QT_BINARY_NAME__
+  "$deploy_tool" --release --no-translations --no-compiler-runtime "./$exe"
 else
   echo "warning: windeployqt not found; falling back to ntldd for direct DLL dependencies" >&2
 fi
 
-ntldd -R ./__QT_BINARY_NAME__ > ./ntldd-mgba-qt.txt
+ntldd -R "./$exe" > ./ntldd-mgba-qt.txt
 
 awk '
   /=> \/mingw64\// { print $3 }
@@ -169,8 +171,18 @@ awk '
 done
 '@
 
-    $bundleScript = $bundleScriptTemplate.Replace('__RUNTIME_DIR__', $runtimeDirPosix).Replace('__QT_BINARY_NAME__', $resolvedQtBinaryName)
-    & $msysShell -lc $bundleScript
+    try {
+        Set-Content -Path $bundleScriptPath -Value $bundleScript -Encoding UTF8 -NoNewline
+        $bundleScriptPathPosix = (& $msysShell -lc 'cygpath -u "$1"' -- $bundleScriptPath).Trim()
+        if (-not $bundleScriptPathPosix) {
+            Fail-Step 'Unable to convert temporary bundle script path to MSYS2 format (cygpath failed).'
+        }
+
+        & $msysShell -lc 'bash "$1" "$2" "$3"' -- $bundleScriptPathPosix $runtimeDirPosix $resolvedQtBinaryName
+    }
+    finally {
+        Remove-Item -Path $bundleScriptPath -Force -ErrorAction SilentlyContinue
+    }
 }
 
 Invoke-Step -Description 'Run mgba-qt runtime smoke test with plugin diagnostics' -Action {
