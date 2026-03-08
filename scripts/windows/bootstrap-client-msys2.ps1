@@ -199,16 +199,36 @@ Invoke-Step -Description 'Run mgba-qt runtime smoke test with plugin diagnostics
     }
 
     $logFile = Join-Path $runtimeDir 'startup-log.txt'
-    if (Test-Path -Path $logFile) {
-        Remove-Item -Path $logFile -Force
-    }
+    New-Item -Path $logFile -ItemType File -Force | Out-Null
 
     $env:QT_DEBUG_PLUGINS = '1'
-    & $runtimeBinary --version *>&1 | Tee-Object -FilePath $logFile
-    $env:QT_DEBUG_PLUGINS = $null
+    try {
+        try {
+            $proc = Start-Process -FilePath $runtimeBinary -ArgumentList '--version' -RedirectStandardOutput $logFile -RedirectStandardError $logFile -PassThru -Wait
+        }
+        catch {
+            $_ | Out-String | Add-Content -Path $logFile
+            Fail-Step "mgba-qt smoke test could not launch '$runtimeBinary'."
+        }
 
-    if ($LASTEXITCODE -ne 0) {
-        Fail-Step "mgba-qt smoke test failed. Inspect '$logFile' and '$runtimeDir/ntldd-mgba-qt.txt'."
+        if ($proc.ExitCode -ne 0) {
+            $inspectHint = ''
+            if (Test-Path -Path $logFile -PathType Leaf) {
+                $inspectHint = " Inspect '$logFile'."
+            }
+            Fail-Step "mgba-qt smoke test failed with exit code $($proc.ExitCode).$inspectHint Inspect '$runtimeDir/ntldd-mgba-qt.txt'."
+        }
+    }
+    finally {
+        $env:QT_DEBUG_PLUGINS = $null
+    }
+
+    if (Test-Path -Path $logFile -PathType Leaf) {
+        $logSizeBytes = (Get-Item -Path $logFile).Length
+        Write-Host "Smoke-test startup log: $logFile ($logSizeBytes bytes)" -ForegroundColor Cyan
+    }
+    else {
+        Write-Host "Smoke-test startup log was not created at expected path: $logFile" -ForegroundColor Yellow
     }
 }
 
