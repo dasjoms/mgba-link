@@ -167,7 +167,7 @@ private:
 	PendingRemoteRoomAction m_pendingRemoteRoomAction = PendingRemoteRoomAction::None;
 	RemoteSessionConfig m_remoteSessionConfig;
 	std::unique_ptr<Netplay::DriverEventQueueBridge> m_remoteDriverBridge;
-	std::atomic<bool> m_remoteDriverDispatchStop = false;
+	std::atomic<bool> m_remoteDriverDispatchStop{false};
 	std::thread m_remoteDriverDispatchThread;
 	bool m_remoteFailureNotified = false;
 };
