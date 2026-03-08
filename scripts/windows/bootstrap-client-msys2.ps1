@@ -134,6 +134,16 @@ Invoke-Step -Description "Prepare runtime bundle in '$runtimeDir'" -Action {
     $runtimeQtBinary = Join-Path $runtimeDir $resolvedQtBinaryName
     Copy-Item -Path $qtBinary -Destination $runtimeQtBinary -Force
 
+    $buildRuntimeDlls = Get-ChildItem -Path $buildDir -Filter '*.dll' -File -ErrorAction SilentlyContinue
+    foreach ($buildRuntimeDll in $buildRuntimeDlls) {
+        Copy-Item -Path $buildRuntimeDll.FullName -Destination (Join-Path $runtimeDir $buildRuntimeDll.Name) -Force
+    }
+
+    $runtimeLibmgba = Join-Path $runtimeDir 'libmgba.dll'
+    if (-not (Test-Path -Path $runtimeLibmgba -PathType Leaf)) {
+        Fail-Step "Critical missing runtime DLL: expected '$runtimeLibmgba'. Ensure libmgba.dll is produced in '$buildDir'."
+    }
+
     $runtimeDirPosix = (& $msysShell -lc 'cygpath -u "$1"' -- $runtimeDir).Trim()
     if (-not $runtimeDirPosix) {
         Fail-Step 'Unable to convert runtime directory path to MSYS2 format (cygpath failed).'
@@ -160,6 +170,28 @@ Invoke-Step -Description "Prepare runtime bundle in '$runtimeDir'" -Action {
         'fi'
         ''
         'ntldd -R "./$exe" > ./ntldd-mgba-qt.txt'
+        'unresolved_count=0'
+        'noncritical_api_set_count=0'
+        'while IFS= read -r unresolved; do'
+        '  [[ -z "$unresolved" ]] && continue'
+        '  dep_name="${unresolved%% *}"'
+        '  if [[ "$dep_name" == ext-ms-win-* ]]; then'
+        '    echo "note: non-critical API-set unresolved entry: $dep_name" >&2'
+        '    noncritical_api_set_count=$((noncritical_api_set_count + 1))'
+        '    continue'
+        '  fi'
+        '  echo "error: critical missing runtime DLL from ntldd: $dep_name" >&2'
+        '  unresolved_count=$((unresolved_count + 1))'
+        'done < <(grep "not found" ./ntldd-mgba-qt.txt || true)'
+        ''
+        'if (( unresolved_count > 0 )); then'
+        '  echo "critical missing runtime DLLs detected ($unresolved_count). Review ./ntldd-mgba-qt.txt." >&2'
+        '  exit 1'
+        'fi'
+        ''
+        'if (( noncritical_api_set_count > 0 )); then'
+        '  echo "non-critical API-set unresolved entries detected ($noncritical_api_set_count); continuing." >&2'
+        'fi'
         ''
         "awk '"
         '  /=> \/mingw64\// { print $3 }'
