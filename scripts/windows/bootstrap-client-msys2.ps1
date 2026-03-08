@@ -33,6 +33,7 @@ function Invoke-Step {
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $outDir = Join-Path $repoRoot 'out/mgba'
 $buildDir = Join-Path $outDir 'build'
+$runtimeDir = Join-Path $outDir 'runtime'
 $msysRoot = 'C:\msys64'
 $msysShell = Join-Path $msysRoot 'usr\bin\bash.exe'
 $mingwPrefix = 'mingw-w64-x86_64'
@@ -114,4 +115,72 @@ if (-not (Test-Path -Path $qtBinary -PathType Leaf)) {
     Fail-Step 'mGBA Qt build artifact missing'
 }
 
+Invoke-Step -Description "Prepare runtime bundle in '$runtimeDir'" -Action {
+    Remove-Item -Path $runtimeDir -Recurse -Force -ErrorAction SilentlyContinue
+    New-Item -Path $runtimeDir -ItemType Directory -Force | Out-Null
+
+    Copy-Item -Path $qtBinary -Destination (Join-Path $runtimeDir 'mgba-qt.exe') -Force
+
+    $runtimeDirPosix = (& $msysShell -lc "cygpath -u '$runtimeDir'").Trim()
+    if (-not $runtimeDirPosix) {
+        Fail-Step 'Unable to convert runtime directory path to MSYS2 format (cygpath failed).'
+    }
+
+    $bundleScriptTemplate = @'
+set -euo pipefail
+export PATH="/mingw64/bin:$PATH"
+cd "__RUNTIME_DIR__"
+
+deploy_tool=""
+if command -v windeployqt-qt5 >/dev/null 2>&1; then
+  deploy_tool="windeployqt-qt5"
+elif command -v windeployqt >/dev/null 2>&1; then
+  deploy_tool="windeployqt"
+fi
+
+if [[ -n "$deploy_tool" ]]; then
+  "$deploy_tool" --release --no-translations --no-compiler-runtime ./mgba-qt.exe
+else
+  echo "warning: windeployqt not found; falling back to ntldd for direct DLL dependencies" >&2
+fi
+
+ntldd -R ./mgba-qt.exe > ./ntldd-mgba-qt.txt
+
+awk '
+  /=> \/mingw64\// { print $3 }
+  /^\/mingw64\// { print $1 }
+' ./ntldd-mgba-qt.txt | sort -u | while read -r dep; do
+  if [[ -f "$dep" ]]; then
+    cp -f "$dep" .
+  fi
+done
+'@
+
+    $bundleScript = $bundleScriptTemplate.Replace('__RUNTIME_DIR__', $runtimeDirPosix)
+    & $msysShell -lc $bundleScript
+}
+
+Invoke-Step -Description 'Run mgba-qt runtime smoke test with plugin diagnostics' -Action {
+    $runtimeBinary = Join-Path $runtimeDir 'mgba-qt.exe'
+    if (-not (Test-Path -Path $runtimeBinary -PathType Leaf)) {
+        Fail-Step "Runtime smoke test could not find '$runtimeBinary'."
+    }
+
+    $logFile = Join-Path $runtimeDir 'startup-log.txt'
+    if (Test-Path -Path $logFile) {
+        Remove-Item -Path $logFile -Force
+    }
+
+    $env:QT_DEBUG_PLUGINS = '1'
+    & $runtimeBinary --version *>&1 | Tee-Object -FilePath $logFile
+    $env:QT_DEBUG_PLUGINS = $null
+
+    if ($LASTEXITCODE -ne 0) {
+        Fail-Step "mgba-qt smoke test failed. Inspect '$logFile' and '$runtimeDir/ntldd-mgba-qt.txt'."
+    }
+}
+
 Write-Host "Client bootstrap complete. Qt binary: $qtBinary" -ForegroundColor Green
+Write-Host "Runtime bundle: $runtimeDir" -ForegroundColor Green
+Write-Host "Dependency report: $(Join-Path $runtimeDir 'ntldd-mgba-qt.txt')" -ForegroundColor Green
+Write-Host "Startup diagnostics: $(Join-Path $runtimeDir 'startup-log.txt')" -ForegroundColor Green
